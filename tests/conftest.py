@@ -47,8 +47,24 @@ def fake_groq():
 
 
 @pytest.fixture
-def client():
-    """Flask test client built from the application factory."""
+def audit_db(tmp_path, monkeypatch):
+    """Point the audit log at a throwaway SQLite file for the duration of a test.
+
+    Each test gets its own empty DB, so writes from one test never leak into
+    another and the real ``audit_log.db`` is never touched.
+    """
+    db_file = tmp_path / "audit_test.db"
+    monkeypatch.setenv("AUDIT_DB_PATH", str(db_file))
+    return str(db_file)
+
+
+@pytest.fixture
+def client(audit_db):
+    """Flask test client built from the application factory.
+
+    Depends on ``audit_db`` so the app's audit log writes land in the
+    per-test temp database (AUDIT_DB_PATH is set before create_app runs).
+    """
     from app import create_app
 
     app = create_app()

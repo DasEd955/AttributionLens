@@ -70,3 +70,60 @@ def test_health_endpoint(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.get_json()["status"] == "ok"
+
+
+# --- Audit log integration (Section 11) ---------------------------------------
+
+
+def test_submission_writes_audit_entry(client, monkeypatch):
+    _stub_llm(monkeypatch, LLMSignalResult(0.81, "looks AI", True))
+    resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
+    content_id = resp.get_json()["content_id"]
+
+    entries = client.get("/log").get_json()["entries"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["content_id"] == content_id
+    assert entry["creator_id"] == "u1"
+    assert entry["llm_score"] == 0.81
+    assert entry["status"] == "classified"
+    # M3: not yet scored.
+    assert entry["attribution"] is None
+    assert entry["confidence"] is None
+
+
+def test_failed_submission_writes_no_audit_entry(client, monkeypatch):
+    # A 503 (signal unavailable) is not a classified decision -> nothing logged.
+    _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
+    client.post("/submit", json={"text": VALID_TEXT})
+    assert client.get("/log").get_json()["entries"] == []
+
+
+def test_log_returns_at_least_three_entries(client, monkeypatch):
+    # The demo requires >= 3 structured entries visible in the log.
+    _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
+    for _ in range(3):
+        client.post("/submit", json={"text": VALID_TEXT})
+
+    entries = client.get("/log").get_json()["entries"]
+    assert len(entries) == 3
+    for entry in entries:
+        assert set(entry.keys()) == {
+            "content_id", "creator_id", "timestamp",
+            "attribution", "confidence", "llm_score", "status",
+        }
+
+
+def test_log_respects_limit_query_param(client, monkeypatch):
+    _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
+    for _ in range(4):
+        client.post("/submit", json={"text": VALID_TEXT})
+
+    entries = client.get("/log?limit=2").get_json()["entries"]
+    assert len(entries) == 2
+
+
+def test_empty_log_endpoint(client):
+    resp = client.get("/log")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"entries": []}
