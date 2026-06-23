@@ -1,19 +1,22 @@
 """app.py - Provenance Guard Flask application entry point; wires routes to signals and audit log.
 
 Milestone 3 scope: the app skeleton, the POST /submit route with input
-validation, and Signal 1 (LLM classification) wired in. The pieces that arrive
-in later milestones are present only as clearly marked placeholders so the
-response keeps the shape of the Section 3 contract without pretending to be
-finished:
+validation, and Signal 1 (LLM classification) wired in.
 
-  Signal 2 (stylometric heuristics)      Milestone 4
-  Confidence scorer / verdict bands       Milestone 4
+Milestone 4 scope (now live): Signal 2 (stylometric heuristics) runs alongside
+Signal 1, and the confidence scorer (Section 5) combines both into a single
+``combined_score``, a ``confidence``, and a ``verdict``. The /submit response
+and the audit log now carry both individual signal scores and the combined
+result. The pieces that arrive in Milestone 5 remain clearly marked placeholders
+so the response keeps the shape of the Section 3 contract without pretending to
+be finished:
+
   Transparency label generator            Milestone 5
   POST /appeal, GET /content              Milestone 5
   Flask-Limiter rate limiting             Milestone 5
 
-The audit log (Section 11) is live now: every /submit writes a structured
-SQLite row and GET /log reads the most recent rows back for the demo view.
+The audit log (Section 11) is live: every /submit writes a structured SQLite row
+and GET /log reads the most recent rows back for the demo view.
 
 Input bounds (Section 9) are enforced now, because validation belongs to the
 /submit route itself.
@@ -26,7 +29,9 @@ import uuid
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from audit_log import get_log, init_db, record_decision
+from scoring import score
 from signals.llm_signal import classify_with_llm
+from signals.stylometric_signal import analyze_stylometry
 
 load_dotenv()
 
@@ -67,18 +72,27 @@ def create_app() -> Flask:
 
     @app.post("/submit")
     def submit():
-        """Accept a text submission, run Signal 1 classification, and write an audit row.
+        """Accept a text submission, run both signals, score them, and write an audit row.
 
         Validates the request body against the input bounds defined in Section 9
-        of planning.md, calls the LLM signal, writes a structured audit log entry,
-        and returns the Section 3 response shape. Stub fields for Milestone 4/5
-        values (verdict, confidence, label) are included with null values.
+        of planning.md, runs Signal 1 (LLM) and Signal 2 (stylometric), combines
+        them with the confidence scorer (Section 5) into a ``combined_score``,
+        ``confidence``, and ``verdict``, writes a structured audit log entry
+        carrying both individual signal scores and the combined result, and
+        returns the Section 3 response shape. The transparency label (Milestone
+        5) is still a null placeholder.
+
+        Signal 2 always runs (it is pure Python and cannot fail externally), so
+        the system degrades gracefully to stylometry alone when the LLM signal is
+        unavailable (Section 9). Only when BOTH signals are unavailable does the
+        route return 503; in Milestone 4 the stylometric signal is always
+        available, so 503 is effectively unreachable here and reserved for future
+        failure modes.
 
         Returns:
             Response: JSON matching the Section 3 contract, HTTP 200 on success.
                       HTTP 400 on invalid input.
-                      HTTP 503 when the LLM signal is unavailable and no
-                      fallback signal exists yet.
+                      HTTP 503 only if every signal is unavailable.
         """
         # --- Input Validation (Section 3 / Section 9) -> 400 on bad input ----
         body = request.get_json(silent=True)
@@ -99,14 +113,20 @@ def create_app() -> Flask:
         # --- Signal 1: LLM Classification -----------------------------------
         llm = classify_with_llm(text)
 
-        # --- Signals/Scoring not yet built (Milestones 4-5) -----------------
-        # Stub stylometric signal and scorer so the response keeps its shape.
-        # These placeholder values are intentionally inert, NOT real readings.
-        stylometric_stub = {"p_ai": None, "features": {}}
+        # --- Signal 2: Stylometric Heuristics (Section 4) -------------------
+        # Pure Python; runs regardless of Groq availability. This is what lets
+        # the system degrade to a single signal instead of failing (Section 9).
+        style = analyze_stylometry(text)
 
-        # Both signals failing means we cannot honestly classify -> 503.
-        # In M3 only the LLM signal exists, so "both fail" == LLM unavailable.
-        if not llm.available:
+        # --- Confidence Scorer (Section 5) ----------------------------------
+        # Combine both signals into combined_score, confidence, and verdict.
+        # When the LLM is down, the scorer caps confidence (Section 9) so the
+        # lone, gameable structural signal cannot present as a confident verdict.
+        scored = score(llm.p_ai, style.p_ai, llm_available=llm.available)
+
+        # 503 is reserved for the case where NO signal is available. The
+        # stylometric signal is always available, so this guards a future state.
+        if not llm.available and style.p_ai is None:
             return jsonify({"error": "Classification temporarily unavailable.", "status": "unavailable"}), 503
 
         content_id = str(uuid.uuid4())
@@ -115,9 +135,9 @@ def create_app() -> Flask:
         # --- Audit Log (Section 11) -----------------------------------------
         # Write a structured row for EVERY classified submission. We store the
         # content hash rather than the raw text (Section 11) so the log stays
-        # queryable without retaining creator content verbatim. verdict /
-        # confidence / combined_score are still None here; the M4 scorer fills
-        # them, and record_decision already accepts them as optional.
+        # queryable without retaining creator content verbatim. The row now
+        # carries BOTH individual signal scores (p_ai_llm, p_ai_style) and the
+        # combined result (combined_score, confidence, verdict) per Section 11.
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         record_decision(
             content_id=content_id,
@@ -127,20 +147,25 @@ def create_app() -> Flask:
             p_ai_llm=llm.p_ai,
             llm_rationale=llm.rationale,
             llm_available=llm.available,
+            p_ai_style=style.p_ai,
+            style_features=style.features,
+            combined_score=scored.combined_p_ai,
+            confidence=scored.confidence,
+            verdict=scored.verdict,
         )
 
         response = {
             "content_id": content_id,
-            "verdict": None,           # Filled by confidence scorer (M4)
-            "combined_score": None,    # Filled by confidence scorer (M4)
-            "confidence": None,        # Filled by confidence scorer (M4)
+            "verdict": scored.verdict,
+            "combined_score": scored.combined_p_ai,
+            "confidence": scored.confidence,
             "label": {                 # Filled by label generator (M5)
                 "variant": None,
                 "text": None,
             },
             "signals": {
                 "llm": llm.to_dict(),
-                "stylometric": stylometric_stub,
+                "stylometric": style.to_dict(),
             },
             "status": status,
             "warnings": ["text_below_min_length"] if too_short else [],

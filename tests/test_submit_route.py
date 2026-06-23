@@ -64,6 +64,26 @@ def test_valid_submission_returns_contract_shape(client, monkeypatch):
     assert data["status"] == "classified"
 
 
+def test_valid_submission_is_scored_with_both_signals(client, monkeypatch):
+    """A valid submission populates the Milestone 4 scored fields and the stylometric block.
+
+    Verifies that Signal 2 now runs (its block is no longer a null stub) and
+    that the confidence scorer fills combined_score, confidence, and verdict.
+    """
+    _stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
+    data = client.post("/submit", json={"text": VALID_TEXT}).get_json()
+
+    # Scorer output is present and in range (no longer null placeholders).
+    assert data["verdict"] in ("likely_ai", "likely_human", "uncertain")
+    assert 0.0 <= data["combined_score"] <= 1.0
+    assert 0.0 <= data["confidence"] <= 1.0
+
+    # Signal 2 actually ran: a real probability and feature dict, not the stub.
+    style = data["signals"]["stylometric"]
+    assert isinstance(style["p_ai"], float)
+    assert "subscores" in style["features"]
+
+
 def test_short_text_is_flagged_not_rejected(client, monkeypatch):
     """Text shorter than MIN_TEXT_LENGTH is accepted (HTTP 200) but flagged in warnings."""
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "r", True))
@@ -72,11 +92,23 @@ def test_short_text_is_flagged_not_rejected(client, monkeypatch):
     assert "text_below_min_length" in resp.get_json()["warnings"]
 
 
-def test_signal_unavailable_returns_503(client, monkeypatch):
-    """When the LLM signal is unavailable, POST /submit returns HTTP 503."""
+def test_llm_unavailable_degrades_to_stylometry(client, monkeypatch):
+    """When the LLM signal is down, /submit degrades to stylometry alone (Section 9).
+
+    As of Milestone 4, Signal 2 always runs, so an unavailable LLM no longer
+    produces a 503. The request succeeds, the response marks the LLM
+    unavailable, and the scorer caps confidence so the lone structural signal
+    cannot present a confident verdict.
+    """
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     resp = client.post("/submit", json={"text": VALID_TEXT})
-    assert resp.status_code == 503
+    assert resp.status_code == 200
+
+    data = resp.get_json()
+    assert data["signals"]["llm"]["available"] is False
+    assert data["signals"]["stylometric"]["p_ai"] is not None
+    # Degraded confidence cap (Section 9): cannot be a high-confidence call.
+    assert data["confidence"] <= 0.5
 
 
 def test_health_endpoint(client):
@@ -90,10 +122,15 @@ def test_health_endpoint(client):
 
 
 def test_submission_writes_audit_entry(client, monkeypatch):
-    """A successful /submit call writes exactly one structured entry to the audit log."""
+    """A successful /submit call writes exactly one structured, fully scored entry.
+
+    As of Milestone 4 the audit row carries the combined verdict and confidence
+    (Section 11), so attribution and confidence are now populated, not null.
+    """
     _stub_llm(monkeypatch, LLMSignalResult(0.81, "looks AI", True))
     resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
-    content_id = resp.get_json()["content_id"]
+    body = resp.get_json()
+    content_id = body["content_id"]
 
     entries = client.get("/log").get_json()["entries"]
     assert len(entries) == 1
@@ -102,17 +139,22 @@ def test_submission_writes_audit_entry(client, monkeypatch):
     assert entry["creator_id"] == "u1"
     assert entry["llm_score"] == 0.81
     assert entry["status"] == "classified"
-    # M3: not yet scored.
-    assert entry["attribution"] is None
-    assert entry["confidence"] is None
+    # M4: now scored. The log mirrors the response verdict and confidence.
+    assert entry["attribution"] == body["verdict"]
+    assert entry["confidence"] == body["confidence"]
 
 
-def test_failed_submission_writes_no_audit_entry(client, monkeypatch):
-    """A 503 response (signal unavailable) does not produce any audit log entry."""
-    # A 503 (signal unavailable) is not a classified decision -> nothing logged.
+def test_degraded_submission_still_writes_audit_entry(client, monkeypatch):
+    """A degraded (LLM-down) submission is still a classified decision -> one audit row.
+
+    Replaces the old M3 "503 writes nothing" test: since Signal 2 always runs,
+    an unavailable LLM degrades to a logged, classified decision rather than 503.
+    """
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     client.post("/submit", json={"text": VALID_TEXT})
-    assert client.get("/log").get_json()["entries"] == []
+    entries = client.get("/log").get_json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["status"] == "classified"
 
 
 def test_log_returns_at_least_three_entries(client, monkeypatch):
