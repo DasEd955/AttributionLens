@@ -20,6 +20,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
+from util import clamp01
 
 logger = logging.getLogger(__name__)
 
@@ -97,18 +98,6 @@ def _build_user_message(text: str) -> str:
     return f"{_DELIM}\n{text}\n{_DELIM}"
 
 
-def _clamp01(value: float) -> float:
-    """Clamp a float to the closed interval [0.0, 1.0].
-
-    Args:
-        value (float): The value to clamp.
-
-    Returns:
-        float: value clamped to [0.0, 1.0].
-    """
-    return max(0.0, min(1.0, value))
-
-
 def classify_with_llm(text: str, client: Optional[object] = None) -> LLMSignalResult:
     """Run the LLM classification signal on ``text``.
 
@@ -156,7 +145,7 @@ def _parse_response(raw: Optional[str]) -> LLMSignalResult:
         return LLMSignalResult(NEUTRAL_SCORE, "LLM signal returned empty response.", False)
     try:
         data = json.loads(raw)
-        p_ai = _clamp01(float(data["p_ai"]))
+        p_ai = clamp01(float(data["p_ai"]))
         rationale = str(data.get("rationale", "")).strip() or "No rationale provided."
         return LLMSignalResult(p_ai, rationale, True)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

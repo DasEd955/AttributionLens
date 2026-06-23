@@ -32,6 +32,7 @@ present as a high-confidence verdict.
 
 from __future__ import annotations
 from dataclasses import dataclass
+from util import clamp01
 
 # Signal weights (Section 5). The LLM is weighted higher because it captures
 # more of what distinguishes the classes, but stylometry keeps real weight so it
@@ -85,18 +86,6 @@ class ScoreResult:
             "agreement": self.agreement,
             "decisiveness": self.decisiveness,
         }
-
-
-def _clamp01(value: float) -> float:
-    """Clamp a float to the closed interval [0.0, 1.0].
-
-    Args:
-        value (float): The value to clamp.
-
-    Returns:
-        float: value clamped to [0.0, 1.0].
-    """
-    return max(0.0, min(1.0, value))
 
 
 def _decide_verdict(combined_p_ai: float, confidence: float) -> str:
@@ -157,13 +146,13 @@ def score(
         ScoreResult: The combined probability, confidence, verdict, and the
             agreement/decisiveness terms that produced the confidence.
     """
-    p_ai_llm = _clamp01(p_ai_llm)
-    p_ai_style = _clamp01(p_ai_style)
+    p_ai_llm = clamp01(p_ai_llm)
+    p_ai_style = clamp01(p_ai_style)
 
-    combined_p_ai = _clamp01(W_LLM * p_ai_llm + W_STYLE * p_ai_style)
+    combined_p_ai = clamp01(W_LLM * p_ai_llm + W_STYLE * p_ai_style)
     agreement = 1.0 - abs(p_ai_llm - p_ai_style)
     decisiveness = 2.0 * abs(combined_p_ai - 0.5)
-    confidence = _clamp01(decisiveness * agreement)
+    confidence = clamp01(decisiveness * agreement)
 
     # Section 9: with only the structural signal, honesty forbids high confidence.
     if not llm_available:

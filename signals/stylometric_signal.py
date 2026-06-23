@@ -25,6 +25,7 @@ Per planning.md Section 4 (Signal 2) and Section 5 (scoring inputs):
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
+from util import clamp01
 
 # Below this many words the structural features (variance, TTR) are too noisy to
 # trust (Section 4, "Short-text instability"). We still return a reading, but we
@@ -70,18 +71,6 @@ class StylometricSignalResult:
             "p_ai": self.p_ai,
             "features": self.features,
         }
-
-
-def _clamp01(value: float) -> float:
-    """Clamp a float to the closed interval [0.0, 1.0].
-
-    Args:
-        value (float): The value to clamp.
-
-    Returns:
-        float: value clamped to [0.0, 1.0].
-    """
-    return max(0.0, min(1.0, value))
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -144,7 +133,7 @@ def _burstiness_subscore(sentence_word_counts: list[int]) -> float:
     cv = std / mean  # Coefficient of Variation: scale independent burstiness
     # A CV around 0.6+ is typical of varied human prose; near 0 is robotic.
     # Map cv in [0, 0.6] linearly to AI-likeness in [1, 0], clamping past 0.6.
-    return _clamp01(1.0 - (cv / 0.6))
+    return clamp01(1.0 - (cv / 0.6))
 
 
 def _ttr_subscore(words: list[str]) -> float:
@@ -176,7 +165,7 @@ def _ttr_subscore(words: list[str]) -> float:
     # text TTR clusters high, landing this near the low-AI end, which is the
     # HONEST reading: TTR carries little information there (Section 4 blind spot),
     # so it must not fabricate separation it does not have.
-    return _clamp01((0.92 - ttr) / (0.92 - 0.55))
+    return clamp01((0.92 - ttr) / (0.92 - 0.55))
 
 
 def _punctuation_subscore(text: str) -> float:
@@ -195,7 +184,7 @@ def _punctuation_subscore(text: str) -> float:
     """
     distinct_marks = sum(1 for mark in _PUNCTUATION if mark in text)
     # Up to ~6 distinct marks reads as varied human punctuation; 0-1 is flat.
-    variety_ai = _clamp01(1.0 - (distinct_marks / 6.0))
+    variety_ai = clamp01(1.0 - (distinct_marks / 6.0))
 
     word_count = len(_WORD_RE.findall(text))
     punct_count = sum(1 for ch in text if ch in _PUNCTUATION)
@@ -205,7 +194,7 @@ def _punctuation_subscore(text: str) -> float:
         density = punct_count / word_count
         # ~0.15 punctuation marks per word is normal prose; far below that is
         # unusually flat. Map density in [0, 0.15] to AI-likeness in [1, 0].
-        density_ai = _clamp01(1.0 - (density / 0.15))
+        density_ai = clamp01(1.0 - (density / 0.15))
 
     return (variety_ai + density_ai) / 2.0
 
@@ -232,8 +221,8 @@ def _complexity_subscore(sentence_word_counts: list[int]) -> float:
     # mildly AI-leaning (long, even clauses). Map [12, 28] to [0.5, 1.0] and
     # short choppy means (< 12) gently toward human.
     if mean_len <= 12:
-        return _clamp01(mean_len / 24.0)  # 12 -> 0.5, shorter -> below 0.5
-    return _clamp01(0.5 + (mean_len - 12) / 32.0)  # 28 -> ~1.0
+        return clamp01(mean_len / 24.0)  # 12 -> 0.5, shorter -> below 0.5
+    return clamp01(0.5 + (mean_len - 12) / 32.0)  # 28 -> ~1.0
 
 
 def analyze_stylometry(text: str) -> StylometricSignalResult:
@@ -307,4 +296,4 @@ def analyze_stylometry(text: str) -> StylometricSignalResult:
         },
     }
 
-    return StylometricSignalResult(p_ai=_clamp01(p_ai), features=features)
+    return StylometricSignalResult(p_ai=clamp01(p_ai), features=features)

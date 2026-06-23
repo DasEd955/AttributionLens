@@ -8,24 +8,14 @@ decisions row directly through sqlite3 to confirm every column was populated.
 """
 
 import sqlite3
-import app as app_module
 from signals.llm_signal import LLMSignalResult
+from tests.helpers import stub_llm
 
 VALID_TEXT = (
     "This is a sufficiently long and reasonably varied piece of writing. It mixes "
     "a couple of short sentences with a longer one, so the structural signal has "
     "something real to measure rather than guessing on too little text."
 )
-
-
-def _stub_llm(monkeypatch, result):
-    """Replace classify_with_llm on app_module with a lambda returning result.
-
-    Args:
-        monkeypatch: The pytest monkeypatch fixture.
-        result (LLMSignalResult): The fixed signal result to return for any call.
-    """
-    monkeypatch.setattr(app_module, "classify_with_llm", lambda text: result)
 
 
 def test_audit_row_records_both_signals_and_combined(client, audit_db, monkeypatch):
@@ -35,7 +25,7 @@ def test_audit_row_records_both_signals_and_combined(client, audit_db, monkeypat
     p_ai_llm, p_ai_style, combined_score, confidence, and verdict are all
     populated and internally consistent with the JSON response.
     """
-    _stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
     body = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"}).get_json()
     content_id = body["content_id"]
 

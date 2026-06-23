@@ -14,15 +14,10 @@ Coverage:
   GET /log respects the limit query parameter and returns the correct shape.
 """
 
-import app as app_module
 from signals.llm_signal import LLMSignalResult
+from tests.helpers import stub_llm
 
 VALID_TEXT = "This is a sufficiently long piece of writing meant to clear the minimum length bound for the route."
-
-
-def _stub_llm(monkeypatch, result):
-    """Replace classify_with_llm on app_module with a lambda returning result."""
-    monkeypatch.setattr(app_module, "classify_with_llm", lambda text: result)
 
 
 def test_missing_text_returns_400(client):
@@ -51,7 +46,7 @@ def test_text_too_long_returns_400(client):
 
 def test_valid_submission_returns_contract_shape(client, monkeypatch):
     """A valid submission returns HTTP 200 with all Section 3 contract keys present."""
-    _stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
     resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
     assert resp.status_code == 200
 
@@ -70,7 +65,7 @@ def test_valid_submission_is_scored_with_both_signals(client, monkeypatch):
     Verifies that Signal 2 now runs (its block is no longer a null stub) and
     that the confidence scorer fills combined_score, confidence, and verdict.
     """
-    _stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
     data = client.post("/submit", json={"text": VALID_TEXT}).get_json()
 
     # Scorer output is present and in range (no longer null placeholders).
@@ -86,7 +81,7 @@ def test_valid_submission_is_scored_with_both_signals(client, monkeypatch):
 
 def test_short_text_is_flagged_not_rejected(client, monkeypatch):
     """Text shorter than MIN_TEXT_LENGTH is accepted (HTTP 200) but flagged in warnings."""
-    _stub_llm(monkeypatch, LLMSignalResult(0.5, "r", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.5, "r", True))
     resp = client.post("/submit", json={"text": "Too short."})
     assert resp.status_code == 200
     assert "text_below_min_length" in resp.get_json()["warnings"]
@@ -100,7 +95,7 @@ def test_llm_unavailable_degrades_to_stylometry(client, monkeypatch):
     unavailable, and the scorer caps confidence so the lone structural signal
     cannot present a confident verdict.
     """
-    _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
+    stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     resp = client.post("/submit", json={"text": VALID_TEXT})
     assert resp.status_code == 200
 
@@ -127,7 +122,7 @@ def test_submission_writes_audit_entry(client, monkeypatch):
     As of Milestone 4 the audit row carries the combined verdict and confidence
     (Section 11), so attribution and confidence are now populated, not null.
     """
-    _stub_llm(monkeypatch, LLMSignalResult(0.81, "looks AI", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.81, "looks AI", True))
     resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
     body = resp.get_json()
     content_id = body["content_id"]
@@ -150,7 +145,7 @@ def test_degraded_submission_still_writes_audit_entry(client, monkeypatch):
     Replaces the old M3 "503 writes nothing" test: since Signal 2 always runs,
     an unavailable LLM degrades to a logged, classified decision rather than 503.
     """
-    _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
+    stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     client.post("/submit", json={"text": VALID_TEXT})
     entries = client.get("/log").get_json()["entries"]
     assert len(entries) == 1
@@ -160,7 +155,7 @@ def test_degraded_submission_still_writes_audit_entry(client, monkeypatch):
 def test_log_returns_at_least_three_entries(client, monkeypatch):
     """GET /log returns at least three structured entries after three submissions."""
     # The demo requires >= 3 structured entries visible in the log.
-    _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
     for _ in range(3):
         client.post("/submit", json={"text": VALID_TEXT})
 
@@ -175,7 +170,7 @@ def test_log_returns_at_least_three_entries(client, monkeypatch):
 
 def test_log_respects_limit_query_param(client, monkeypatch):
     """GET /log?limit=N returns exactly N entries when more than N exist."""
-    _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
+    stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
     for _ in range(4):
         client.post("/submit", json={"text": VALID_TEXT})
 
