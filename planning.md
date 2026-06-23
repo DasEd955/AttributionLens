@@ -8,7 +8,7 @@ The guiding principle of the entire design is asymmetric caution: on a writing p
 
 ## 1. Architecture Overview (the path a submission takes)
 
-A single piece of text travels through the system as follows.
+A single piece of text travels through the system as follows:
 
 1. **Client submits** — A platform sends `POST /submit` with the raw text and an optional creator identifier.
 2. **Rate limiter** — Flask-Limiter checks the caller against the per-endpoint quota. If the quota is exceeded the request stops here with a `429`.
