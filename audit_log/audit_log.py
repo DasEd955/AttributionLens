@@ -20,7 +20,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-DEFAULT_DB_PATH = "audit_log.db"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "audit_log.db")
 
 # Section 11 decisions table. Columns the later milestones fill (p_ai_style,
 # combined_score, confidence, verdict, label_variant) are nullable now so a

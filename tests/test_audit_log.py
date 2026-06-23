@@ -16,7 +16,7 @@ Coverage:
 import json
 import re
 
-import audit_log
+from audit_log import audit_log
 
 
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
