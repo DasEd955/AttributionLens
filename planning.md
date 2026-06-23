@@ -311,7 +311,35 @@ The log is the single source of truth for the demo (at least three decision entr
 
 ---
 
-## 12. Known Limitations
+## 12. Test Suite
+
+The `tests/` directory contains 54 tests across 8 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
+
+### File-by-file breakdown
+
+**`conftest.py`** — Shared fixtures. Provides `FakeGroqClient`, a deterministic stand in for the Groq SDK that returns a canned structured response without making any network calls. Also provides `audit_db`, which opens an isolated temporary SQLite database for each test, and `client`, which wires that database into the Flask test client so route tests never touch production state.
+
+**`helpers.py`** — A single `stub_llm()` utility that monkeypatches the LLM classification function on the app module to return a fixed `LLMSignalResult`. This lets route level tests bypass the real signal entirely, isolating HTTP contract behavior from signal implementation.
+
+**`test_llm_signal.py`** — Unit tests for `signals/llm_signal.py` (Signal 1). Verifies that `classify_with_llm` returns a probability in `[0, 1]` and a rationale string (not a binary flag), clamps scores that arrive out of range, degrades gracefully when Groq raises an exception, and fences submitted text inside delimiters to prevent prompt injection.
+
+**`test_stylometric_signal.py`** — Unit tests for `signals/stylometric_signal.py` (Signal 2). Confirms that `analyze_stylometry` computes all four features (burstiness, type-token ratio, punctuation, mean complexity), that uniform low diversity text scores higher than varied text, that short text below 40 words is blended toward 0.5 rather than asserted confidently, and includes the regression guard `test_ttr_subscore_not_silently_pinned_on_short_text` added after the calibration bug in Milestone 4.
+
+**`test_scoring.py`** — Unit tests for `scoring.py`. Asserts the exact `0.6 / 0.4` weights, the agreement, decisiveness, and confidence formulas against hand-computed expectations, the asymmetric verdict bands from Section 5, the Section 6 worked example (p_llm = 0.85, p_style = 0.30 yields `uncertain`), and that signal disagreement actively lowers confidence. Also tests `test_strong_agreeing_high_score_is_likely_ai` to confirm the `likely_ai` band is reachable when both signals genuinely agree, and verifies that degraded mode (LLM unavailable) caps confidence at 0.5.
+
+**`test_audit_log.py`** — Unit tests for `audit_log/audit_log.py` against a temporary database. Confirms that decision entries round-trip with the correct field shapes, that timestamps are ISO-8601 UTC with millisecond precision, that `get_recent_entries` returns newest-first and respects the limit parameter, that optional Milestone 4 fields (`verdict`, `confidence`, `p_ai_style`) persist and are retrieved correctly, and that `init_db` is idempotent.
+
+**`test_submit_route.py`** — Integration tests for `POST /submit` and `GET /log`. Validates `400` on missing or out-of-bounds input, that a valid submission returns `200` with all Section 3 contract keys present, that both signals appear in the response (`signals.llm` and `signals.stylometric`), that short text is flagged in the response rather than rejected outright, and that every classified submission writes an audit row queryable via `/log`.
+
+**`test_audit_captures_both_signals.py`** — A focused integration test added as the Milestone 4 checkpoint requirement. It submits a real request through the Flask test client, reads the raw SQLite row directly, and asserts that `p_ai_llm`, `p_ai_style`, `combined_score`, `confidence`, and `verdict` are all present and non-null. This test exists specifically to catch any wiring failure where the scorer output is returned to the client but not persisted.
+
+### What is not tested
+
+Tests do not cover rate-limiting behavior (Flask-Limiter is not configured in test mode), the `POST /appeal` and `GET /content/<id>` endpoints (planned for Milestone 5), or the label generation logic. No test uses a live Groq API key.
+
+---
+
+## 13. Known Limitations
 
 Two specific content types this system will likely misclassify, and why.
 
@@ -322,21 +350,23 @@ Other acknowledged limits: very short text starves the stylometric signal; a kno
 
 ---
 
-## 13. AI Tool Plan
+## 14. AI Tool Plan
 
 All implementation is done with Claude Code, with Claude (web) used for quick standalone checks of individual functions and prompt wording. Each milestone provides specific sections of this spec as context so the generated code implements against a concrete contract rather than a vague description.
 
 ### Milestone 3 — Submission endpoint + first signal
 
 - **Spec provided** — Sections 1 (overview), 2 (submission diagram), 3 (API surface), and the Signal 1 portion of Section 4.
-- **Asked to generate** — A Flask app skeleton, the `POST /submit` route with input validation, and the LLM signal function that calls Groq and parses a structured `p_ai_llm` plus rationale.
-- **Verification** — Call the LLM signal function directly on a few obviously human and obviously AI samples before wiring it into the endpoint, confirming the probabilities point the right direction and the prompt treats the input as data, not instructions.
+- **What was built** — A Flask app skeleton (`app.py`), the `POST /submit` route with input validation and length bounds, and `signals/llm_signal.py`, which calls Groq (`llama-3.3-70b-versatile`) and parses a structured `p_ai_llm` plus a short rationale. The audit log (`audit_log/audit_log.py`) was also introduced at this stage, persisting every classification decision to a SQLite `decisions` table.
+- **Verification** — The LLM signal was exercised directly on a small set of obviously human and obviously AI samples before route wiring, confirming probabilities point the right direction and the prompt treats submitted text as data inside delimiters, not as instructions.
 
 ### Milestone 4 — Second signal + confidence scoring
 
-- **Spec provided** — Section 4 (both signals), Section 5 (confidence scoring, including the formulas and bands), and the submission diagram.
-- **Asked to generate** — The stylometric signal function (the four features and their mapping to `p_ai_style`) and the confidence scorer that produces `combined_p_ai`, `confidence`, and `verdict`.
-- **Verification** — Run the fixture corpus from Section 5: confirm clearly AI and clearly human texts produce meaningfully different scores and bands (not a flip at 0.5), and confirm the formal human samples do not cross into `likely_ai`.
+- **Spec provided** — Section 4 (both signals), Section 5 (confidence scoring formulas and bands), and the submission diagram.
+- **What was built** — `signals/stylometric_signal.py`, which computes the four spec features (burstiness via coefficient of variation, type-token ratio, punctuation density and variety, mean complexity) and combines them into `p_ai_style` using weights 0.35 / 0.35 / 0.20 / 0.10. Texts below 40 words have their result blended toward 0.5 to avoid over-asserting on thin input. The module returns a `StylometricSignalResult` dataclass with a `to_dict()` method, mirroring the existing `LLMSignalResult` pattern. `scoring.py` implements the Section 5 formulas verbatim: `combined_p_ai = 0.6 * p_llm + 0.4 * p_style`, agreement, decisiveness, and `confidence = decisiveness * agreement`. Verdict bands are asymmetric: `likely_ai` requires `combined_p_ai >= 0.75` and `confidence >= 0.65`; `likely_human` requires only `combined_p_ai <= 0.40`. `app.py` was updated so both signals run on every submission, and the audit row now records both individual scores plus the combined result. A previously undiscovered TTR calibration bug was found and fixed during this milestone (see calibration note below).
+- **Calibration bug found and fixed** — During `scripts/calibration_check.py` runs, the TTR subscore was 0.0 for every fixture because the initial band `[0.4, 0.7]` assumed long text ratios. Short submissions have TTR in the range 0.86 to 0.90 (few words leaves little chance to repeat), so the band saturated silently. The band was recalibrated to `[0.55, 0.92]`, and `test_ttr_subscore_not_silently_pinned_on_short_text` was added as a regression guard.
+- **Calibration results (4 fixtures)** — After recalibration, known AI text scored `combined = 0.66` versus known human text at `combined = 0.13`, clear separation. The clearly-AI fixture lands in `uncertain` rather than `likely_ai` because its sentence length variance reads as structurally human to the stylometric signal, causing the signals to disagree and confidence to collapse. This is the asymmetric caution design working correctly: `likely_ai` requires decisive agreement from both signals, not just a high combined score.
+- **Degraded mode behavior change** — Since Signal 2 always runs, an unavailable Groq client no longer returns `503`. Instead the system proceeds on stylometry alone with confidence capped at 0.5 (Section 9). Tests that previously asserted the old `503` / null-M3 behavior were updated to match.
 
 ### Milestone 5 — Production layer
 
@@ -346,7 +376,7 @@ All implementation is done with Claude Code, with Claude (web) used for quick st
 
 ---
 
-## 14. Spec Reflection and AI Usage
+## 15. Spec Reflection and AI Usage
 
 These two sections are completed during and after implementation (Milestones 3 to 5), per the project layout.
 
