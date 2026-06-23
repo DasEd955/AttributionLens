@@ -1,15 +1,22 @@
-"""Shared pytest fixtures and fake Groq client for unit tests.
+"""conftest.py - Shared pytest fixtures and a fake Groq client for all test modules.
 
-Tests never hit the real Groq API. We inject a fake client that mimics the
-small slice of the SDK surface we use:
+Tests never hit the real Groq API. A FakeGroqClient is injected wherever the
+signal code calls the real SDK. It mimics the exact surface used:
 
     client.chat.completions.create(...).choices[0].message.content -> str
+
+Fixtures:
+    fake_groq   The FakeGroqClient class itself (not an instance); tests call it with
+                the reply string or exception they want the fake model to return.
+    audit_db    Redirects AUDIT_DB_PATH to a tmp_path file for the duration of
+                one test; each test gets an isolated, empty database.
+    client      Flask test client built from create_app(), depends on audit_db so
+                all route-level audit writes land in the per-test temp database.
 """
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 
 # Make the repo root importable (so `import app`, `import signals...` work)
@@ -23,16 +30,34 @@ class FakeGroqClient:
     """Minimal stand-in for groq.Groq.
 
     ``reply`` is the raw string the fake model "returns". If ``raise_exc`` is
-    set, ``create`` raises it instead — used to test graceful degradation.
+    set, ``create`` raises it instead. Used to test graceful degradation.
     """
 
     def __init__(self, reply: str = '{"p_ai": 0.5, "rationale": "x"}', raise_exc: Exception | None = None):
         self._reply = reply
         self._raise_exc = raise_exc
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-        self.calls = []  # records (model, messages) for assertions
+        self.calls = []  # Records (model, messages) for assertions
 
     def _create(self, model, messages, **kwargs):
+        """Simulate chat.completions.create; raise or return the configured reply.
+
+        Records each call in self.calls so tests can assert on the model and
+        messages that were passed. If raise_exc was set, raises it instead of
+        returning a response object, which exercises the graceful degradation path.
+
+        Args:
+            model (str): The model identifier passed by the caller.
+            messages (list): The messages list passed by the caller.
+            **kwargs: Any additional keyword arguments (e.g. temperature, response_format).
+
+        Returns:
+            SimpleNamespace: An object mimicking a Groq completion with
+                             .choices[0].message.content set to self._reply.
+
+        Raises:
+            Exception: Whatever was passed as raise_exc, if set.
+        """
         self.calls.append({"model": model, "messages": messages, "kwargs": kwargs})
         if self._raise_exc is not None:
             raise self._raise_exc

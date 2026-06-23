@@ -1,12 +1,17 @@
-"""Unit tests for the POST /submit route (Milestone 3 scope).
+"""test_submit_route.py - Integration tests for the POST /submit and supporting routes.
 
-Verify the Section 3 API contract and Section 9 input bounds:
-  * 400 on malformed / missing / out-of-bounds input
-  * 200 response carries the contract keys with Signal 1 populated
-  * 503 when the (only) signal is unavailable
-  * graceful-degrade path does not crash the route
+Verifies the Section 3 API contract and Section 9 input bounds end-to-end
+through the Flask test client. The LLM signal is monkeypatched on app_module
+so these tests never reach the Groq API.
 
-The LLM signal is monkeypatched so these tests never hit the network.
+Coverage:
+  HTTP 400 on malformed, missing, or out-of-bounds input.
+  HTTP 200 response contains all Section 3 contract keys with Signal 1 populated.
+  HTTP 503 when the only available signal is unavailable.
+  Short text is flagged via the warnings list rather than rejected.
+  Every classified submission writes one structured audit log entry.
+  A 503 response writes no audit entry.
+  GET /log respects the limit query parameter and returns the correct shape.
 """
 
 import app as app_module
@@ -16,30 +21,36 @@ VALID_TEXT = "This is a sufficiently long piece of writing meant to clear the mi
 
 
 def _stub_llm(monkeypatch, result):
+    """Replace classify_with_llm on app_module with a lambda returning result."""
     monkeypatch.setattr(app_module, "classify_with_llm", lambda text: result)
 
 
 def test_missing_text_returns_400(client):
+    """POST /submit with no ``text`` field returns HTTP 400."""
     resp = client.post("/submit", json={"creator_id": "abc"})
     assert resp.status_code == 400
 
 
 def test_empty_text_returns_400(client):
+    """POST /submit with a whitespace-only ``text`` value returns HTTP 400."""
     resp = client.post("/submit", json={"text": "   "})
     assert resp.status_code == 400
 
 
 def test_non_json_body_returns_400(client):
+    """POST /submit with a non-JSON body returns HTTP 400."""
     resp = client.post("/submit", data="not json", content_type="text/plain")
     assert resp.status_code == 400
 
 
 def test_text_too_long_returns_400(client):
+    """POST /submit with text exceeding MAX_TEXT_LENGTH returns HTTP 400."""
     resp = client.post("/submit", json={"text": "a" * 20_001})
     assert resp.status_code == 400
 
 
 def test_valid_submission_returns_contract_shape(client, monkeypatch):
+    """A valid submission returns HTTP 200 with all Section 3 contract keys present."""
     _stub_llm(monkeypatch, LLMSignalResult(0.7, "looks AI", True))
     resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
     assert resp.status_code == 200
@@ -54,6 +65,7 @@ def test_valid_submission_returns_contract_shape(client, monkeypatch):
 
 
 def test_short_text_is_flagged_not_rejected(client, monkeypatch):
+    """Text shorter than MIN_TEXT_LENGTH is accepted (HTTP 200) but flagged in warnings."""
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "r", True))
     resp = client.post("/submit", json={"text": "Too short."})
     assert resp.status_code == 200
@@ -61,21 +73,24 @@ def test_short_text_is_flagged_not_rejected(client, monkeypatch):
 
 
 def test_signal_unavailable_returns_503(client, monkeypatch):
+    """When the LLM signal is unavailable, POST /submit returns HTTP 503."""
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     resp = client.post("/submit", json={"text": VALID_TEXT})
     assert resp.status_code == 503
 
 
 def test_health_endpoint(client):
+    """GET /health returns HTTP 200 with status "ok"."""
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.get_json()["status"] == "ok"
 
 
-# --- Audit log integration (Section 11) ---------------------------------------
+# --- Audit Log Integration (Section 11) ---------------------------------------
 
 
 def test_submission_writes_audit_entry(client, monkeypatch):
+    """A successful /submit call writes exactly one structured entry to the audit log."""
     _stub_llm(monkeypatch, LLMSignalResult(0.81, "looks AI", True))
     resp = client.post("/submit", json={"text": VALID_TEXT, "creator_id": "u1"})
     content_id = resp.get_json()["content_id"]
@@ -93,6 +108,7 @@ def test_submission_writes_audit_entry(client, monkeypatch):
 
 
 def test_failed_submission_writes_no_audit_entry(client, monkeypatch):
+    """A 503 response (signal unavailable) does not produce any audit log entry."""
     # A 503 (signal unavailable) is not a classified decision -> nothing logged.
     _stub_llm(monkeypatch, LLMSignalResult(0.5, "unavailable", False))
     client.post("/submit", json={"text": VALID_TEXT})
@@ -100,6 +116,7 @@ def test_failed_submission_writes_no_audit_entry(client, monkeypatch):
 
 
 def test_log_returns_at_least_three_entries(client, monkeypatch):
+    """GET /log returns at least three structured entries after three submissions."""
     # The demo requires >= 3 structured entries visible in the log.
     _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
     for _ in range(3):
@@ -115,6 +132,7 @@ def test_log_returns_at_least_three_entries(client, monkeypatch):
 
 
 def test_log_respects_limit_query_param(client, monkeypatch):
+    """GET /log?limit=N returns exactly N entries when more than N exist."""
     _stub_llm(monkeypatch, LLMSignalResult(0.4, "r", True))
     for _ in range(4):
         client.post("/submit", json={"text": VALID_TEXT})
@@ -124,6 +142,7 @@ def test_log_respects_limit_query_param(client, monkeypatch):
 
 
 def test_empty_log_endpoint(client):
+    """GET /log returns HTTP 200 with an empty entries list when no submissions exist."""
     resp = client.get("/log")
     assert resp.status_code == 200
     assert resp.get_json() == {"entries": []}
