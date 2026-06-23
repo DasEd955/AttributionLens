@@ -7,7 +7,7 @@ each fixture's individual signal scores alongside the combined result.
 
 Per the Milestone 4 brief: when a fixture produces a score that does not match
 intuition, printing BOTH signal scores separately (plus the per-feature
-stylometric sub-scores) is how you find which signal is misbehaving. The LLM
+stylometric subscores) is how you find which signal is misbehaving. The LLM
 score is supplied as a fixed, representative reading here so the harness is
 deterministic and never calls Groq; only the structural signal is computed live.
 
