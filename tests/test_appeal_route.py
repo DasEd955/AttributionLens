@@ -77,6 +77,7 @@ def test_appeal_flips_status_and_logs_reasoning(client, monkeypatch):
     entries = client.get("/log").get_json()["entries"]
     entry = next(e for e in entries if e["content_id"] == content_id)
     assert entry["status"] == "under_review"
+    assert entry["appeal_filed"] is True
     assert entry["appeal_reasoning"] == REASONING
 
 

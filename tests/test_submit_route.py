@@ -137,6 +137,13 @@ def test_submission_writes_audit_entry(client, monkeypatch):
     # M4: now scored. The log mirrors the response verdict and confidence.
     assert entry["attribution"] == body["verdict"]
     assert entry["confidence"] == body["confidence"]
+    # M5: the demo log surfaces BOTH individual signal scores plus the combined
+    # result, so a reviewer sees the inputs that produced the verdict.
+    assert entry["llm_score"] == body["signals"]["llm"]["p_ai"]
+    assert entry["style_score"] == body["signals"]["stylometric"]["p_ai"]
+    assert entry["combined_score"] == body["combined_score"]
+    # Not appealed -> appeal_filed is False.
+    assert entry["appeal_filed"] is False
 
 
 def test_degraded_submission_still_writes_audit_entry(client, monkeypatch):
@@ -164,8 +171,8 @@ def test_log_returns_at_least_three_entries(client, monkeypatch):
     for entry in entries:
         assert set(entry.keys()) == {
             "content_id", "creator_id", "timestamp",
-            "attribution", "confidence", "llm_score", "status",
-            "appeal_reasoning",
+            "attribution", "confidence", "llm_score", "style_score",
+            "combined_score", "status", "appeal_filed", "appeal_reasoning",
         }
 
 

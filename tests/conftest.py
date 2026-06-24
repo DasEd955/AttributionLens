@@ -89,9 +89,12 @@ def client(audit_db):
 
     Depends on ``audit_db`` so the app's audit log writes land in the
     per-test temp database (AUDIT_DB_PATH is set before create_app runs).
+    Rate limiting is disabled here (Section 10) so the suite can fire many
+    requests without tripping a 429; the dedicated rate-limit test builds its
+    own app with limiting enabled.
     """
     from app import create_app
 
-    app = create_app()
+    app = create_app(enable_rate_limit=False)
     app.config.update(TESTING=True)
     return app.test_client()

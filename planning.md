@@ -333,9 +333,9 @@ The `tests/` directory contains 54 tests across 8 files. Every module with nontr
 
 **`test_audit_captures_both_signals.py`** — A focused integration test added as the Milestone 4 checkpoint requirement. It submits a real request through the Flask test client, reads the raw SQLite row directly, and asserts that `p_ai_llm`, `p_ai_style`, `combined_score`, `confidence`, and `verdict` are all present and non-null. This test exists specifically to catch any wiring failure where the scorer output is returned to the client but not persisted.
 
-### What is not tested
+### What is not tested (completed)
 
-Tests do not cover rate-limiting behavior (Flask-Limiter is not configured in test mode), the `POST /appeal` and `GET /content/<id>` endpoints (planned for Milestone 5), or the label generation logic. No test uses a live Groq API key.
+As of Milestone 5 the suite also covers rate limiting (`test_rate_limit.py` builds an app with Flask-Limiter enabled and confirms `429` once a quota is exceeded), the `POST /appeal` and `GET /content/<id>` endpoints (`test_appeal_route.py`), and the label generation logic (`test_labels.py`). The shared `client` fixture disables rate limiting so the rest of the suite can fire freely. No test uses a live Groq API key.
 
 ---
 

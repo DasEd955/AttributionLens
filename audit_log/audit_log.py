@@ -336,8 +336,8 @@ def _row_to_entry(row: sqlite3.Row, appeal_reasoning: Optional[str] = None) -> d
 
     Returns:
         dict[str, Any]: A dict with keys content_id, creator_id, timestamp,
-                        attribution, confidence, llm_score, status,
-                        appeal_reasoning.
+                        attribution, confidence, llm_score, style_score,
+                        combined_score, status, appeal_filed, appeal_reasoning.
     """
     return {
         "content_id": row["content_id"],
@@ -346,8 +346,14 @@ def _row_to_entry(row: sqlite3.Row, appeal_reasoning: Optional[str] = None) -> d
         # "attribution" is the verdict; null until the Milestone-4 scorer fills it.
         "attribution": row["verdict"],
         "confidence": row["confidence"],
+        # Both individual signal scores are surfaced so the demo /log row shows
+        # the LLM and stylometric inputs that produced the combined result.
         "llm_score": row["p_ai_llm"],
+        "style_score": row["p_ai_style"],
+        "combined_score": row["combined_score"],
         "status": row["status"],
+        # True once a POST /appeal has been filed against this decision (M5).
+        "appeal_filed": appeal_reasoning is not None,
         # Null until a POST /appeal attaches reasoning to this decision (M5).
         "appeal_reasoning": appeal_reasoning,
     }
