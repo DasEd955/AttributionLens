@@ -173,7 +173,7 @@ The bands that map scores to labels are not symmetric around 0.5. Declaring "AI"
 
 | Verdict | Condition | Rationale |
 | --- | --- | --- |
-| **likely_ai** | `combined_p_ai >= 0.75` AND `confidence >= 0.65` | A strong, agreeing, decisive signal is required before the system will accuse a creator. |
+| **likely_ai** | `combined_p_ai >= 0.65` AND `confidence >= 0.20` | A clear combined score is required before the system will accuse a creator. The confidence floor blocks verdicts where both signals are near the fence; it is intentionally low because the formula already embeds the cross-signal agreement penalty. |
 | **likely_human** | `combined_p_ai <= 0.40` | The human zone is intentionally wide. Defaulting toward human is the safe error. |
 | **uncertain** | everything else | The buffer band. It absorbs disagreement, weak signals, and the careful human prose false positive. |
 
@@ -199,7 +199,7 @@ Consider a human who writes in a careful, formal, well structured style (the exa
 1. **Signal 1 (LLM) over-flags** — The model sees polished, even prose and returns a high `p_ai_llm`, say 0.85. On its own this signal would falsely accuse the writer.
 2. **Signal 2 (stylometric) often disagrees** — Genuine human writing usually still carries sentence-length variance and lexical range that the heuristics read as human, returning a low `p_ai_style`, say 0.30. The structural signal does not share the LLM's register bias.
 3. **Confidence collapses on disagreement** — `agreement = 1 - |0.85 - 0.30| = 0.45`. Even though `combined_p_ai = 0.6*0.85 + 0.4*0.30 = 0.63`, `decisiveness = 2*|0.63 - 0.5| = 0.26`, so `confidence = 0.26 * 0.45 ≈ 0.12`. The system is, correctly, not confident.
-4. **The verdict lands in "uncertain," not "AI"** — `combined_p_ai` of 0.63 is below the strict 0.75 AI threshold, and confidence of 0.12 is far below the 0.65 floor. The verdict is `uncertain`.
+4. **The verdict lands in "uncertain," not "AI"** — `combined_p_ai` of 0.63 is below the 0.65 AI score threshold, and confidence of 0.12 is below the 0.20 floor. The verdict is `uncertain`.
 5. **The label is gentle, not an accusation** — The reader sees the uncertain variant (Section 7), which explicitly frames the result as inconclusive context rather than a judgment about the creator.
 6. **If the system still gets it wrong, the creator appeals** — The response included a `content_id`. The creator sends `POST /appeal` with their reasoning. The content's status changes to `under_review`, the appeal is logged alongside the original decision, and a human reviewer can open the record to see both signal scores, the combined score, the confidence, and the creator's account. The original verdict is never automatically overturned and never automatically hardened. A human decides.
 

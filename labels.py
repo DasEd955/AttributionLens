@@ -6,7 +6,7 @@ Per planning.md Section 7 (transparency label design):
     non-technical user and invites false precision. The three named states
     carry the meaning instead.
   * There are exactly three label variants, and their text is FIXED by the spec:
-      - high_confidence_ai      verdict likely_ai with confidence at/above 0.65
+      - high_confidence_ai      verdict likely_ai with confidence at/above 0.20
       - high_confidence_human   verdict likely_human
       - uncertain               verdict uncertain, or any low confidence result
   * Every variant hedges ("likely", "probably") and names that the estimate is
@@ -31,7 +31,7 @@ VARIANT_UNCERTAIN = "uncertain"
 # Confidence floor that the AI variant requires (planning.md Section 7, Variant A).
 # Mirrors scoring.AI_CONFIDENCE_THRESHOLD; an AI verdict that somehow arrives with
 # lower confidence falls back to the uncertain variant rather than accusing.
-AI_VARIANT_CONFIDENCE_FLOOR = 0.65
+AI_VARIANT_CONFIDENCE_FLOOR = 0.20
 
 # The exact reader-facing text of each variant, verbatim from planning.md
 # Section 7. Each tuple is (title, body). The title is the bold headline a reader

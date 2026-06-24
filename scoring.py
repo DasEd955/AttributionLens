@@ -41,8 +41,8 @@ W_LLM = 0.6
 W_STYLE = 0.4
 
 # Verdict band thresholds (Section 5 table). Asymmetric by design.
-AI_SCORE_THRESHOLD = 0.75        # combined_p_ai must reach this for likely_ai
-AI_CONFIDENCE_THRESHOLD = 0.65   # AND confidence must reach this for likely_ai
+AI_SCORE_THRESHOLD = 0.65        # combined_p_ai must reach this for likely_ai
+AI_CONFIDENCE_THRESHOLD = 0.20   # AND confidence must reach this for likely_ai
 HUMAN_SCORE_THRESHOLD = 0.40     # combined_p_ai at or below this is likely_human
 
 # Graceful degradation ceiling (Section 9). With only the stylometric signal

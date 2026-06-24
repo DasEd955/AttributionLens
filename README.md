@@ -198,7 +198,7 @@ The bands that map scores to labels are not symmetric around 0.5. Declaring "AI"
 
 | Verdict | Condition | Rationale |
 | --- | --- | --- |
-| **likely_ai** | `combined_p_ai >= 0.75` AND `confidence >= 0.65` | A strong, agreeing, decisive signal is required before the system will accuse a creator. |
+| **likely_ai** | `combined_p_ai >= 0.65` AND `confidence >= 0.20` | A clear combined score is required before the system will accuse a creator. The confidence floor blocks verdicts where both signals are near the fence; it is intentionally low because the formula already embeds the cross-signal agreement penalty. |
 | **likely_human** | `combined_p_ai <= 0.40` | The human zone is intentionally wide. Defaulting toward human is the safe error. |
 | **uncertain** | everything else | The buffer band. It absorbs disagreement, weak signals, and the careful human prose false positive. |
 
