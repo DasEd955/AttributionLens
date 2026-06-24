@@ -110,6 +110,25 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
     )
     limiter.enabled = enable_rate_limit
 
+    @app.get("/")
+    def index():
+        """Return a service overview listing the available API endpoints.
+
+        Provides a landing page for the root URL so that opening the server
+        in a browser returns a useful JSON response instead of a 404. Lists
+        every registered route so a new caller knows where to start without
+        reading the source.
+
+        Returns:
+            Response: JSON with ``service``, ``status``, and ``endpoints``,
+                      HTTP 200.
+        """
+        return jsonify({
+            "service": "AttributionLens",
+            "status": "ok",
+            "endpoints": ["/health", "/submit", "/appeal", "/log", "/content/<content_id>"],
+        }), 200
+
     @app.get("/health")
     def health():
         """Return a simple liveness check confirming the service is running.
