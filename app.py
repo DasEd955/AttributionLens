@@ -7,13 +7,15 @@ Milestone 4 scope (now live): Signal 2 (stylometric heuristics) runs alongside
 Signal 1, and the confidence scorer (Section 5) combines both into a single
 ``combined_score``, a ``confidence``, and a ``verdict``. The /submit response
 and the audit log now carry both individual signal scores and the combined
-result. The pieces that arrive in Milestone 5 remain clearly marked placeholders
-so the response keeps the shape of the Section 3 contract without pretending to
-be finished:
+result.
 
-  Transparency label generator            Milestone 5
-  POST /appeal, GET /content              Milestone 5
-  Flask-Limiter rate limiting             Milestone 5
+Milestone 5 scope (now live): the transparency label generator (Section 7) maps
+each verdict and confidence to one of the three reader-facing label variants,
+and the /submit response carries the real label instead of a placeholder. The
+appeals workflow (Section 8) is live: POST /appeal flips a contested decision to
+``under_review``, logs the appeal, and confirms receipt, and GET /content reads
+the full decision record (with any attached appeals) for a human reviewer.
+Flask-Limiter rate limiting (Section 10) is not wired in this change.
 
 The audit log (Section 11) is live: every /submit writes a structured SQLite row
 and GET /log reads the most recent rows back for the demo view.
@@ -28,7 +30,16 @@ import logging
 import uuid
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
-from audit_log import get_log, init_db, record_decision
+from audit_log import (
+    get_appeals,
+    get_decision,
+    get_log,
+    init_db,
+    record_appeal,
+    record_decision,
+    set_status,
+)
+from labels import generate_label
 from scoring import score
 from signals.llm_signal import classify_with_llm
 from signals.stylometric_signal import analyze_stylometry
@@ -129,6 +140,12 @@ def create_app() -> Flask:
         if not llm.available and style.p_ai is None:
             return jsonify({"error": "Classification temporarily unavailable.", "status": "unavailable"}), 503
 
+        # --- Transparency Label Generator (Section 7) -----------------------
+        # Map the verdict and confidence to one of the three fixed reader-facing
+        # label variants. The label changes with the score; it is never the same
+        # text regardless of the result.
+        label = generate_label(scored.verdict, scored.confidence)
+
         content_id = str(uuid.uuid4())
         status = "classified"
 
@@ -152,6 +169,7 @@ def create_app() -> Flask:
             combined_score=scored.combined_p_ai,
             confidence=scored.confidence,
             verdict=scored.verdict,
+            label_variant=label.variant,
         )
 
         response = {
@@ -159,10 +177,7 @@ def create_app() -> Flask:
             "verdict": scored.verdict,
             "combined_score": scored.combined_p_ai,
             "confidence": scored.confidence,
-            "label": {                 # Filled by label generator (M5)
-                "variant": None,
-                "text": None,
-            },
+            "label": label.to_dict(),  # Section 7 reader-facing label
             "signals": {
                 "llm": llm.to_dict(),
                 "stylometric": style.to_dict(),
@@ -188,6 +203,93 @@ def create_app() -> Flask:
         limit = request.args.get("limit", default=50, type=int)
         limit = max(1, min(limit, 500))  # Keep the response bounded
         return jsonify({"entries": get_log(limit=limit)}), 200
+
+    @app.post("/appeal")
+    def appeal():
+        """Accept a creator's appeal, flip the decision to under_review, and log it.
+
+        Implements the Section 8 appeals workflow. Validates the payload, looks
+        up the contested decision, changes its status from ``classified`` to
+        ``under_review``, writes an ``appeal`` row to the audit log linked by
+        ``content_id``, and returns a confirmation. Reclassification is
+        deliberately not automated (Section 8): a contested decision is escalated
+        to a human, never silently overturned by the pipeline that made the call.
+
+        The reasoning field is accepted under either the spec name ``reasoning``
+        or the alias ``creator_reasoning`` so callers using either spelling work.
+
+        Returns:
+            Response: JSON ``{content_id, status, message, appeal_id}`` with HTTP
+                      200 on success.
+                      HTTP 400 on a missing content_id or empty reasoning.
+                      HTTP 404 when the content_id is unknown.
+        """
+        # --- Validate Appeal Payload (Section 8) -> 400 on bad input --------
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "Request body must be a JSON object."}), 400
+
+        content_id = body.get("content_id")
+        if not isinstance(content_id, str) or not content_id.strip():
+            return jsonify({"error": "Field 'content_id' is required and must be a non-empty string."}), 400
+
+        # Accept both the spec field 'reasoning' and the alias 'creator_reasoning'.
+        reasoning = body.get("reasoning")
+        if reasoning is None:
+            reasoning = body.get("creator_reasoning")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return jsonify({"error": "Field 'reasoning' is required and must be a non-empty string."}), 400
+
+        content_id = content_id.strip()
+        reasoning = reasoning.strip()
+        creator_id = body.get("creator_id")
+
+        # --- Lookup Content Record (Section 8) -> 404 if unknown ------------
+        decision = get_decision(content_id)
+        if decision is None:
+            return jsonify({"error": "Unknown content_id."}), 404
+
+        # --- Update status to under_review (Section 8) ----------------------
+        set_status(content_id, "under_review")
+
+        # --- Log the appeal alongside the original decision (Section 11) ----
+        appeal_id = str(uuid.uuid4())
+        record_appeal(
+            appeal_id=appeal_id,
+            content_id=content_id,
+            reasoning=reasoning,
+            creator_id=creator_id if isinstance(creator_id, str) else None,
+        )
+
+        return jsonify({
+            "content_id": content_id,
+            "status": "under_review",
+            "message": "Your appeal was received and the content is now under review.",
+            "appeal_id": appeal_id,
+        }), 200
+
+    @app.get("/content/<content_id>")
+    def content(content_id):
+        """Return the full stored decision record and any appeals for a human reviewer.
+
+        Supporting endpoint from Section 3. A reviewer working the appeal queue
+        reads this to see the original verdict, both raw signal scores, the LLM
+        rationale, the combined score and confidence, the label variant, the
+        current status, and the creator's appeal reasoning, all in one place,
+        without re-running the pipeline (Section 8).
+
+        Args:
+            content_id (str): The UUID of the decision to fetch, from the URL.
+
+        Returns:
+            Response: JSON of the decision record with an ``appeals`` list,
+                      HTTP 200. HTTP 404 when the content_id is unknown.
+        """
+        decision = get_decision(content_id)
+        if decision is None:
+            return jsonify({"error": "Unknown content_id."}), 404
+        decision["appeals"] = get_appeals(content_id)
+        return jsonify(decision), 200
 
     return app
 

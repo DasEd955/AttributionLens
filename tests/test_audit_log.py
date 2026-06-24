@@ -39,10 +39,11 @@ def test_record_and_read_back_minimal_entry(audit_db):
     entries = audit_log.get_log()
     assert len(entries) == 1
     entry = entries[0]
-    # Demo entry shape from the task example.
+    # Demo entry shape from the task example. Milestone 5 adds appeal_reasoning.
     assert set(entry.keys()) == {
         "content_id", "creator_id", "timestamp",
         "attribution", "confidence", "llm_score", "status",
+        "appeal_reasoning",
     }
     assert entry["content_id"] == "c1"
     assert entry["creator_id"] == "user-1"
@@ -51,6 +52,8 @@ def test_record_and_read_back_minimal_entry(audit_db):
     # Not yet scored in Milestone 3 -> attribution/confidence are null.
     assert entry["attribution"] is None
     assert entry["confidence"] is None
+    # Never appealed -> appeal_reasoning is null.
+    assert entry["appeal_reasoning"] is None
 
 
 def test_timestamp_is_iso_utc_millis_with_z(audit_db):
