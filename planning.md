@@ -313,11 +313,11 @@ The log is the single source of truth for the demo (at least three decision entr
 
 ## 12. Test Suite
 
-The `tests/` directory contains 54 tests across 8 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
+The `tests/` directory contains 72 tests across 10 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
 
 ### File-by-file breakdown
 
-**`conftest.py`** — Shared fixtures. Provides `FakeGroqClient`, a deterministic stand in for the Groq SDK that returns a canned structured response without making any network calls. Also provides `audit_db`, which opens an isolated temporary SQLite database for each test, and `client`, which wires that database into the Flask test client so route tests never touch production state.
+**`conftest.py`** — Shared fixtures. Provides `FakeGroqClient`, a deterministic stand in for the Groq SDK that returns a canned structured response without making any network calls. Also provides `audit_db`, which opens an isolated temporary SQLite database for each test, and `client`, which wires that database into the Flask test client so route tests never touch production state. The `client` fixture disables rate limiting so the rest of the suite can fire freely.
 
 **`helpers.py`** — A single `stub_llm()` utility that monkeypatches the LLM classification function on the app module to return a fixed `LLMSignalResult`. This lets route level tests bypass the real signal entirely, isolating HTTP contract behavior from signal implementation.
 
@@ -333,9 +333,11 @@ The `tests/` directory contains 54 tests across 8 files. Every module with nontr
 
 **`test_audit_captures_both_signals.py`** — A focused integration test added as the Milestone 4 checkpoint requirement. It submits a real request through the Flask test client, reads the raw SQLite row directly, and asserts that `p_ai_llm`, `p_ai_style`, `combined_score`, `confidence`, and `verdict` are all present and non-null. This test exists specifically to catch any wiring failure where the scorer output is returned to the client but not persisted.
 
-### What is not tested (completed)
+**`test_labels.py`** — Unit tests for `labels.py`. Confirms that each of the three Section 7 variants is reachable and carries its exact spec text, that the AI variant is gated on confidence at or above 0.65 (a would-be AI verdict arriving below that floor falls back to `uncertain`), that a `likely_human` verdict always maps to the human variant, and that no variant text contains a raw numeric probability.
 
-As of Milestone 5 the suite also covers rate limiting (`test_rate_limit.py` builds an app with Flask-Limiter enabled and confirms `429` once a quota is exceeded), the `POST /appeal` and `GET /content/<id>` endpoints (`test_appeal_route.py`), and the label generation logic (`test_labels.py`). The shared `client` fixture disables rate limiting so the rest of the suite can fire freely. No test uses a live Groq API key.
+**`test_appeal_route.py`** — Integration tests for `POST /appeal` and `GET /content/<id>`. Covers `400` on missing `content_id` or missing reasoning, `404` on an unknown `content_id`, the full `200` confirmation contract (content_id, status, message, appeal_id), that a filed appeal flips the decision to `under_review` and surfaces the creator's reasoning in `/log`, that the `creator_reasoning` field alias is accepted in place of `reasoning`, and that `GET /content/<id>` returns the decision with its attached appeals.
+
+**`test_rate_limit.py`** — Integration tests for rate limiting. Builds an app with Flask-Limiter enabled and confirms that `POST /submit` returns `429` once the per-endpoint quota is exceeded. No test uses a live Groq API key.
 
 ---
 
@@ -371,14 +373,21 @@ All implementation is done with Claude Code, with Claude (web) used for quick st
 ### Milestone 5 — Production layer
 
 - **Spec provided** — Section 7 (label variants), Section 8 (appeals), Section 10 (rate limiting), Section 11 (audit log schema), and the appeal diagram.
-- **Asked to generate** — The label generation logic mapping verdict and confidence to the three exact label texts, the `POST /appeal` endpoint with the status update and audit logging, the SQLite audit log, and the Flask-Limiter configuration.
-- **Verification** — Drive inputs that reach all three label variants, confirm an appeal flips status to `under_review` and writes an appeal record, confirm the audit log holds at least three decision entries, and confirm the rate limits return `429` when exceeded.
+- **What was built** — `labels.py`, which maps a verdict and confidence value to one of the three Section 7 variants and returns the exact, verbatim reader-facing text. The `TransparencyLabel` dataclass mirrors the `label` block of the `/submit` response contract. `app.py` was extended with the `POST /appeal` endpoint, which validates the payload, looks up the original decision, flips its status to `under_review`, attaches the appeal record to the audit log, and returns the Section 3 confirmation shape. `GET /content/<id>` was also added, returning the full decision record with all attached appeals for use by a human reviewer. Flask-Limiter was wired into `app.py` with the three tier limit table from Section 10: `POST /submit` at 10/hour and 30/day, `POST /appeal` at 5/hour, and a global 100/hour backstop. A `util/` package was introduced to hold the shared `clamp01` helper, which was being duplicated across signal and scoring modules. Test coverage was expanded to 72 tests across 10 files.
+- **Verification** — All three label variants are reached and match spec text verbatim. An appeal flips a decision to `under_review` and writes an appeal record recoverable via `/content/<id>` and `/log`. The audit log holds at least three decision entries. Rate limits return `429` when the quota is exceeded. All 72 tests pass.
 
 ---
 
 ## 15. Spec Reflection and AI Usage
 
-These two sections are completed during and after implementation (Milestones 3 to 5), per the project layout.
+### Spec reflection
 
-- **Spec reflection** — One concrete way this spec made implementation faster, and one place where the implementation diverged from the plan and why. To be filled in once the code exists.
-- **AI usage** — At least two specific instances describing what the AI was directed to build and what was revised or overridden. To be filled in once the code exists.
+**Where the spec accelerated implementation.** The confidence formula in Section 5 was written out as explicit arithmetic before any code existed. When Claude Code generated `scoring.py`, it had a concrete equation to implement rather than a prose description of intent, so the first draft matched the acceptance tests almost exactly. The only manual check needed was confirming the floating-point arithmetic matched the hand-computed examples in Section 6.
+
+**Where implementation diverged from the plan.** Section 9 originally stated that an unavailable Groq client returns `503` when both signals fail. During Milestone 4, Signal 2 (stylometry) was made always-available by design (it is pure Python with no external dependency), which made the original `503` path unreachable under normal operation. The degraded path was redefined: if Groq is unavailable, the system proceeds on stylometry alone and caps confidence at 0.5. The `503` is now reserved for the genuinely unreachable case where both signals fail simultaneously. Tests that previously asserted the old `503` behavior were updated to match.
+
+### AI usage
+
+**Instance 1 — Stylometric signal and calibration.** Claude Code was given Section 4 (Signal 2 description) and asked to implement `signals/stylometric_signal.py` with the four specified features and a normalized `p_ai_style` output. The first draft was correct in structure but had a silent calibration error: the type-token ratio band was set for long texts, so short submissions saturated silently to a subscore of 0.0. This was caught via `scripts/calibration_check.py`, the band was recalibrated to `[0.55, 0.92]`, and a regression guard test was added. The AI produced the correct shape; the calibration required manual verification against real fixture data.
+
+**Instance 2 — Appeals endpoint.** Claude Code was given Sections 8 and 11 and asked to implement `POST /appeal` and extend the audit log schema. The first draft accepted either `reasoning` or `creator_reasoning` as the appeal field without being asked to, which turned out to match the test suite. One revision was needed: the original draft did not attach the appeal record to the decision row in a way that was queryable through the existing `/log` endpoint. The audit log schema was adjusted so that `appeal_filed`, `appeal_reasoning`, and `appeal_id` are surfaced as columns on the decision row, not as a separate lookup, keeping the reviewer view simple.
