@@ -172,6 +172,7 @@ def test_log_returns_at_least_three_entries(client, monkeypatch):
         assert set(entry.keys()) == {
             "content_id", "creator_id", "timestamp",
             "attribution", "confidence", "llm_score", "style_score",
+            "grounding_score", "grounding_factor",
             "combined_score", "status", "appeal_filed", "appeal_reasoning",
         }
 

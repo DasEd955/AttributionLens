@@ -39,11 +39,12 @@ def test_record_and_read_back_minimal_entry(audit_db):
     entries = audit_log.get_log()
     assert len(entries) == 1
     entry = entries[0]
-    # Demo entry shape from the task example. Milestone 5 adds both signal
-    # scores, the combined score, and the appeal_filed / appeal_reasoning fields.
+    # Demo entry shape. Milestone 5 adds both signal scores, combined score, and
+    # appeal fields. Milestone 6 adds grounding_score and grounding_factor.
     assert set(entry.keys()) == {
         "content_id", "creator_id", "timestamp",
         "attribution", "confidence", "llm_score", "style_score",
+        "grounding_score", "grounding_factor",
         "combined_score", "status", "appeal_filed", "appeal_reasoning",
     }
     assert entry["content_id"] == "c1"

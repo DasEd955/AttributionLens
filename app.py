@@ -20,6 +20,13 @@ Flask-Limiter rate limiting (Section 10) is wired per caller (by remote address)
 100 per hour global backstop covers the supporting endpoints. A caller over a
 quota is stopped with a 429 before any signal runs.
 
+Milestone 6 scope (now live): Signal 3 (grounding heuristics) runs alongside
+Signals 1 and 2. It measures experiential specificity (temporal anchors, spatial
+references, sensory observations, firsthand epistemics) and returns a
+``grounding_factor`` in [0.85, 1.15] that the confidence scorer uses as a
+confidence modifier rather than a third additive probability. The /submit response
+and the audit log now carry the grounding signal output.
+
 The audit log (Section 11) is live: every /submit writes a structured SQLite row
 and GET /log reads the most recent rows back for the demo view.
 
@@ -48,6 +55,7 @@ from labels import generate_label
 from scoring import score
 from signals.llm_signal import classify_with_llm
 from signals.stylometric_signal import analyze_stylometry
+from signals.grounding_signal import analyze_grounding
 
 load_dotenv()
 
@@ -191,11 +199,24 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
         # the system degrade to a single signal instead of failing (Section 9).
         style = analyze_stylometry(text)
 
+        # --- Signal 3: Grounding Heuristics (Section 4) ---------------------
+        # Pure Python; measures experiential specificity (temporal anchors,
+        # spatial references, sensory observations, firsthand epistemics).
+        # Returns a grounding_factor in [0.85, 1.15] used as a confidence
+        # modifier rather than a third additive probability term.
+        grounding = analyze_grounding(text)
+
         # --- Confidence Scorer (Section 5) ----------------------------------
-        # Combine both signals into combined_score, confidence, and verdict.
+        # Combine Signals 1 and 2 into combined_score, confidence, and verdict,
+        # then apply Signal 3's grounding_factor as a confidence modifier.
         # When the LLM is down, the scorer caps confidence (Section 9) so the
         # lone, gameable structural signal cannot present as a confident verdict.
-        scored = score(llm.p_ai, style.p_ai, llm_available=llm.available)
+        scored = score(
+            llm.p_ai,
+            style.p_ai,
+            llm_available=llm.available,
+            grounding_factor=grounding.grounding_factor,
+        )
 
         # 503 is reserved for the case where NO signal is available. The
         # stylometric signal is always available, so this guards a future state.
@@ -228,6 +249,9 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
             llm_available=llm.available,
             p_ai_style=style.p_ai,
             style_features=style.features,
+            p_grounding_human=grounding.p_grounding_human,
+            grounding_features=grounding.features,
+            grounding_factor=grounding.grounding_factor,
             combined_score=scored.combined_p_ai,
             confidence=scored.confidence,
             verdict=scored.verdict,
@@ -243,6 +267,7 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
             "signals": {
                 "llm": llm.to_dict(),
                 "stylometric": style.to_dict(),
+                "grounding": grounding.to_dict(),
             },
             "status": status,
             "warnings": ["text_below_min_length"] if too_short else [],

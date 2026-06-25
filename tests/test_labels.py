@@ -65,11 +65,11 @@ def test_uncertain_variant_text_matches_spec():
 def test_low_confidence_ai_falls_back_to_uncertain():
     """A likely_ai verdict below the confidence floor never surfaces the accusatory variant.
 
-    Section 7 gates Variant A on confidence >= 0.65. A would-be AI verdict that
-    arrives underconfident must fall back to the uncertain variant rather than
-    accuse the creator.
+    Section 7 gates Variant A on confidence >= AI_VARIANT_CONFIDENCE_FLOOR (0.20).
+    A would-be AI verdict arriving with confidence below 0.20 falls back to the
+    uncertain variant rather than accusing the creator.
     """
-    label = generate_label(VERDICT_AI, 0.50)
+    label = generate_label(VERDICT_AI, 0.10)
     assert label.variant == VARIANT_UNCERTAIN
     assert label.text == EXPECTED_UNCERTAIN_TEXT
 

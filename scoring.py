@@ -16,6 +16,17 @@ Exact formulas (Section 5):
     decisiveness  = 2 * abs(combined_p_ai - 0.5)              in [0, 1]
     confidence    = decisiveness * agreement
 
+Signal 3 (grounding) modifies confidence AFTER the two signal formula (Section 4):
+
+    confidence = clamp01(confidence * grounding_factor)   (grounding_factor in [0.85, 1.15])
+
+The grounding factor is a confidence modifier, not a third additive term in
+combined_p_ai, because Signal 3 answers a different question from Signals 1 and 2.
+Signals 1/2 ask "how AI-like is this text?" Signal 3 asks "is there evidence of
+genuine human provenance?" That is naturally a modifier on confidence (certainty
+about the verdict) rather than an estimate of P(AI). Treating it as an additive
+probability term would conflate two orthogonal questions.
+
 Confidence is high only when the estimate is far from the 0.5 fence AND the two
 independent signals agree. Disagreement actively collapses confidence and pushes
 the verdict to "uncertain". That is the mechanism (Section 6) that protects a
@@ -49,6 +60,12 @@ HUMAN_SCORE_THRESHOLD = 0.40     # combined_p_ai at or below this is likely_huma
 # available, no result may report higher confidence than this.
 DEGRADED_CONFIDENCE_CAP = 0.5
 
+# Grounding factor bounds (planning.md Section 4, Signal 3). These mirror the
+# constants in grounding_signal.py and are re-exported from scoring.py so tests
+# and callers can import them from a single authoritative location.
+GROUNDING_FACTOR_MIN = 0.85
+GROUNDING_FACTOR_MAX = 1.15
+
 # Verdict label strings (also the audit-log ``verdict`` values, Section 11).
 VERDICT_AI = "likely_ai"
 VERDICT_HUMAN = "likely_human"
@@ -61,9 +78,9 @@ class ScoreResult:
 
     Carries the three quantities the response contract (planning.md Section 3)
     and the audit log (Section 11) need: the combined probability, the
-    confidence in it, and the resulting verdict band. ``agreement`` and
-    ``decisiveness`` are retained for transparency so a reviewer can see why the
-    confidence landed where it did.
+    confidence in it, and the resulting verdict band. ``agreement``,
+    ``decisiveness``, and ``grounding_factor`` are retained for transparency
+    so a reviewer can see why the confidence landed where it did.
     """
 
     combined_p_ai: float       # Weighted probability the text is AI generated, [0, 1]
@@ -71,13 +88,14 @@ class ScoreResult:
     verdict: str               # One of VERDICT_AI / VERDICT_HUMAN / VERDICT_UNCERTAIN
     agreement: float           # 1 - |p_ai_llm - p_ai_style|, [0, 1]
     decisiveness: float        # 2 * |combined_p_ai - 0.5|, [0, 1]
+    grounding_factor: float    # Signal 3 confidence modifier in [0.85, 1.15]
 
     def to_dict(self) -> dict:
         """Serialize the scorer output for the response and the audit log.
 
         Returns:
             dict: Keys ``combined_p_ai``, ``confidence``, ``verdict``,
-                  ``agreement``, ``decisiveness``.
+                  ``agreement``, ``decisiveness``, ``grounding_factor``.
         """
         return {
             "combined_p_ai": self.combined_p_ai,
@@ -85,6 +103,7 @@ class ScoreResult:
             "verdict": self.verdict,
             "agreement": self.agreement,
             "decisiveness": self.decisiveness,
+            "grounding_factor": self.grounding_factor,
         }
 
 
@@ -118,14 +137,17 @@ def score(
     p_ai_style: float,
     *,
     llm_available: bool = True,
+    grounding_factor: float = 1.0,
 ) -> ScoreResult:
     """Combine the two signal probabilities into a calibrated verdict.
 
     Applies the Section 5 formulas: a weighted combined probability, an
     agreement term (how close the two signals are), a decisiveness term (how far
     the combined score sits from the 0.5 fence), and ``confidence`` as their
-    product. The verdict band is then derived from the combined score and
-    confidence via the asymmetric Section 5 table.
+    product. The grounding_factor from Signal 3 is then applied as a confidence
+    multiplier (Section 4, grounding architecture note). The verdict band is
+    derived from the final combined score and confidence via the asymmetric
+    Section 5 table.
 
     When ``llm_available`` is False the system is running on the stylometric
     signal alone (Section 9). In that degraded mode the reported confidence is
@@ -141,18 +163,27 @@ def score(
         p_ai_style (float): Signal 2 probability in [0, 1].
         llm_available (bool, optional): Whether the LLM signal ran. When False,
             confidence is capped (Section 9). Defaults to True.
+        grounding_factor (float, optional): Signal 3 confidence modifier in
+            [0.85, 1.15]. Values above 1.0 boost confidence when rich human
+            provenance signals are present; values below 1.0 reduce confidence
+            when the text is completely ungrounded. Defaults to 1.0 (no change).
 
     Returns:
-        ScoreResult: The combined probability, confidence, verdict, and the
-            agreement/decisiveness terms that produced the confidence.
+        ScoreResult: The combined probability, confidence, verdict, the
+            agreement/decisiveness terms, and the grounding_factor applied.
     """
     p_ai_llm = clamp01(p_ai_llm)
     p_ai_style = clamp01(p_ai_style)
+    grounding_factor = max(0.85, min(1.15, grounding_factor))
 
     combined_p_ai = clamp01(W_LLM * p_ai_llm + W_STYLE * p_ai_style)
     agreement = 1.0 - abs(p_ai_llm - p_ai_style)
     decisiveness = 2.0 * abs(combined_p_ai - 0.5)
     confidence = clamp01(decisiveness * agreement)
+
+    # Apply the Signal 3 grounding modifier to confidence. This happens BEFORE
+    # the degraded mode cap so the cap remains the absolute ceiling.
+    confidence = clamp01(confidence * grounding_factor)
 
     # Section 9: with only the structural signal, honesty forbids high confidence.
     if not llm_available:
@@ -166,4 +197,5 @@ def score(
         verdict=verdict,
         agreement=round(agreement, 4),
         decisiveness=round(decisiveness, 4),
+        grounding_factor=round(grounding_factor, 4),
     )

@@ -14,15 +14,16 @@ A single piece of text travels through the system as follows:
 2. **Rate limiter** — Flask-Limiter checks the caller against the per-endpoint quota. If the quota is exceeded the request stops here with a `429`.
 3. **Input validation** — The service checks that the body is well-formed, that the text is present, and that it falls within the accepted length bounds. Malformed input stops here with a `400`.
 4. **Signal 1: LLM classification** — The raw text is sent to Groq (`llama-3.3-70b-versatile`), which returns a probability that the text is AI generated plus a short rationale. This captures holistic semantic and stylistic coherence.
-5. **Signal 2: Stylometric heuristics** — In parallel, pure-Python heuristics compute measurable structural properties of the text (sentence length variance, vocabulary diversity, punctuation density) and map them to a probability that the text is AI generated. This captures statistical regularity, which differs from what the LLM sees.
-6. **Confidence scorer** — The two signal outputs are combined into a single probability and a separate confidence value. Confidence rises only when the signals are both decisive and in agreement. Signal disagreement actively lowers confidence and pushes the verdict toward "uncertain."
-7. **Transparency label generator** — The combined score and confidence select one of three label variants (likely AI assisted, likely human written, uncertain) and produce the exact reader-facing text.
-8. **Audit log** — The decision is persisted as a structured record: content hash, both raw signal scores, combined score, confidence, verdict, label variant, and timestamp.
-9. **Response** — The service returns a structured JSON payload containing the verdict, confidence, label text, and the content ID the creator would later use to appeal.
+5. **Signal 2: Stylometric heuristics** — In parallel, pure Python heuristics compute measurable structural properties of the text (sentence length variance, vocabulary diversity, punctuation density) and map them to a probability that the text is AI generated. This captures statistical regularity, which differs from what the LLM sees.
+6. **Signal 3: Grounding heuristics** — Also in parallel, pure Python heuristics measure experiential specificity: whether the text contains concrete temporal anchors, named spatial references, sensory observations, or first-hand epistemic markers. This measures a different axis from both Signals 1 and 2 (see Section 4). It returns a `grounding_factor` in [0.85, 1.15] used as a confidence modifier rather than a third additive probability.
+7. **Confidence scorer** — Signals 1 and 2 are combined into a single probability and a confidence value; the grounding factor from Signal 3 then modifies that confidence up or down. Confidence rises when signals are decisive and in agreement; Signal 3 can amplify or dampen that confidence based on experiential evidence.
+8. **Transparency label generator** — The combined score and confidence select one of three label variants (likely AI assisted, likely human written, uncertain) and produce the exact reader-facing text.
+9. **Audit log** — The decision is persisted as a structured record: content hash, all three raw signal scores, grounding factor, combined score, confidence, verdict, label variant, and timestamp.
+10. **Response** — The service returns a structured JSON payload containing the verdict, confidence, label text, and the content ID the creator would later use to appeal.
 
 The appeal path is shorter. A creator sends `POST /appeal` with the content ID and their reasoning. The service looks up the original decision, changes the content's status to `under_review`, attaches the appeal text to the record, writes an appeal event to the audit log, and returns a confirmation. Reclassification is intentionally not automated. A contested decision is escalated to a human, never silently overturned by the same system that made the original call.
 
-Steps 4 and 5 are deliberately independent. The LLM signal is semantic and the stylometric signal is structural, so they can run concurrently and they fail independently. If Groq is unavailable, the system degrades to the stylometric signal alone and caps the confidence it is willing to report (see Section 9).
+Steps 4, 5, and 6 are deliberately independent. The LLM signal is semantic, the stylometric signal is structural, and the grounding signal is content-grounding; all three can run concurrently and fail independently. If Groq is unavailable, the system degrades to the stylometric and grounding signals alone and caps the confidence it is willing to report (see Section 9).
 
 ---
 
@@ -38,8 +39,10 @@ flowchart TD
     C -->|invalid / too long| ERR[/400 Bad Request/]
     C -->|raw text| D[Signal 1: LLM Classifier - Groq]
     C -->|raw text| E[Signal 2: Stylometric Heuristics]
+    C -->|raw text| G3[Signal 3: Grounding Heuristics]
     D -->|p_ai_llm in 0..1 + rationale| F[Confidence Scorer]
     E -->|p_ai_style in 0..1 + features| F
+    G3 -->|grounding_factor in 0.85..1.15| F
     F -->|combined_p_ai + confidence + verdict| G[Transparency Label Generator]
     G -->|label variant + reader text| H[(Audit Log)]
     H -->|content_id| I[/200 JSON: verdict, confidence, label, content_id/]
@@ -108,7 +111,7 @@ The contract below is what every other component implements against.
 
 ## 4. Detection Signals
 
-The system uses two genuinely distinct signals. One is semantic and learned, the other is structural and deterministic. They are informative in combination precisely because they fail in different ways. A weakness in one is, in many cases, a strength in the other.
+The system uses three genuinely distinct signals. Each measures a different axis of the text: semantic/stylistic coherence, structural statistical properties, and content-grounding specificity. They are informative in combination precisely because they fail in different ways and measure orthogonal properties.
 
 ### Signal 1 — LLM classification (Groq, `llama-3.3-70b-versatile`)
 
@@ -138,6 +141,31 @@ The system uses two genuinely distinct signals. One is semantic and learned, the
 
 **Why the pairing works** — The LLM's worst failure (flagging careful human prose as AI) is structural blind, and the stylometric signal, which sees only structure, will frequently disagree in those cases. That disagreement is not noise. It is signal. The confidence scorer in Section 5 treats disagreement between the two as evidence of uncertainty, which is the mechanism that protects the careful human writer from a false accusation.
 
+### Signal 3 — Grounding heuristics (pure Python)
+
+- **What it measures** — Experiential specificity: whether the text contains evidence of originating from a genuine chain of human experience, memory, or observation rather than from statistical synthesis. Specifically it measures four content-grounding dimensions:
+  - **Temporal specificity** — concrete clock times (7:12 AM), calendar dates (March 4th), specific durations (twenty minutes). These are the kinds of anchors that come from episodic memory.
+  - **Spatial specificity** — named locations, physical positioning language (platform 4, the back corner of the room). A writer who was actually somewhere records it.
+  - **Sensory observations** — smells, sounds, textures, colours used as direct observation (smelled like coffee, the seat was sticky). AI text omits these because they are not informationally efficient for generic prose.
+  - **First-hand epistemics** — phrases that communicate how knowledge was acquired (I remember, when I was, my friend, I had no idea). These mark information as personally witnessed rather than generally synthesised.
+- **Why this signal is genuinely orthogonal** — The key independence test: could two texts have identical stylometric statistics but very different grounding scores? Yes. A text with uniform short sentences and restricted vocabulary (AI-leaning by stylometry) can be full of timestamps, named places, and sensory observations (high grounding). The two signals measure orthogonal axes. The grounding signal also does not overlap with the LLM signal: the LLM measures holistic distributional similarity to AI-generated text, while grounding measures whether specific content evidence of human provenance is present. The three signals ask three distinct questions: "Does this resemble AI language?", "Does this have AI-like statistical structure?", and "Does this contain evidence of a specific human experience?"
+- **Why it is a confidence modifier, not a third additive probability** — The grounding signal answers a fundamentally different question from Signals 1 and 2. Signals 1 and 2 both estimate P(AI generated). Signal 3 asks whether there is affirmative evidence of human provenance. Absence of grounding is not strong evidence of AI: a technical specification, a philosophy essay, or a mathematical proof may contain zero temporal anchors or sensory observations while being entirely human-written. This makes grounding naturally suited to modifying confidence (how certain the system is) rather than directly shifting P(AI). Rich grounding should increase confidence that the system is correct about a human verdict; total absence of grounding on a borderline text should reduce confidence slightly.
+- **Output shape** — A `grounding_factor` in [0.85, 1.15] passed to the confidence scorer as a multiplier, a `p_grounding_human` probability in [0, 1] for audit log transparency, and a raw feature dict with hit counts and per-dimension subscores.
+- **Blind spots** —
+  - **Genre neutrality** — Technical writing, philosophy, mathematics, and news articles may score near 0.5 by design (no strong grounding signals either way). The signal is most informative on personal narratives, memoir-style prose, and informal writing. Absence of grounding is never treated as strong evidence of AI.
+  - **Pattern matching limits** — The regex-based feature extraction can miss unconventional phrasings and can be defeated by someone who knows the patterns. Like stylometry it measures symptoms, not causes.
+  - **Short-text instability** — Below 40 words the grounding features are too sparse to be reliable. Short text returns `grounding_factor = 1.0` (neutral), consistent with the stylometric signal's fence logic.
+
+**Signal reliability table** — The three signals have different reliability profiles and failure modes:
+
+| Signal | Reliability | Explainability | Cost | Primary failure mode |
+| --- | --- | --- | --- | --- |
+| LLM (Signal 1) | Medium-High | Medium | External API | Register bias (flags formal human prose) |
+| Stylometric (Signal 2) | Medium | High | Cheap | Adversarially gameable; genre confusion |
+| Grounding (Signal 3) | Low-Medium | High | Cheap | Genre neutrality; not universal evidence |
+
+**Weighting rationale** — Signal 3 is weighted at 15% of effective influence as a confidence modifier in [0.85, 1.15]. This reflects its lower and more genre-dependent reliability: it can meaningfully tip borderline cases when rich grounding is present, but its absence on technical or abstract writing should not substantially penalise what may be genuinely human text. The `false positives are worse than false negatives` principle from the project's core philosophy motivates keeping its influence modest.
+
 ---
 
 ## 5. Confidence Scoring with Uncertainty
@@ -153,12 +181,14 @@ A binary "AI / not AI" output would be dishonest, because perfect AI detection i
 combined_p_ai   = w_llm * p_ai_llm + w_style * p_ai_style      (w_llm = 0.6, w_style = 0.4)
 agreement       = 1 - abs(p_ai_llm - p_ai_style)               (in [0, 1])
 decisiveness    = 2 * abs(combined_p_ai - 0.5)                  (in [0, 1]; 0 at the fence, 1 at the extremes)
-confidence      = decisiveness * agreement
+confidence      = clamp01(decisiveness * agreement * grounding_factor)
 ```
+
+where `grounding_factor` is the output of Signal 3 in [0.85, 1.15] (default 1.0 when Signal 3 is neutral).
 
 The LLM is weighted slightly higher (0.6) because it captures more of what actually distinguishes the two classes, but the stylometric signal is given real weight (0.4) so it can pull the verdict back when the LLM overly flags formal prose.
 
-The `confidence` formula is the heart of the design. Confidence is high only when two conditions both hold: the combined estimate is far from the 0.5 fence (`decisiveness`), and the two independent signals agree (`agreement`). If the LLM says 0.9 AI but stylometry says 0.2 AI, agreement collapses to about 0.3 and confidence is dragged down regardless of where the combined score landed. The system then reports "uncertain" rather than gambling on a contested call.
+The `confidence` formula is the heart of the design. Confidence is high only when two conditions both hold: the combined estimate is far from the 0.5 fence (`decisiveness`), and the two independent signals agree (`agreement`). The grounding factor then acts as a final modifier: richly grounded text (strong evidence of human provenance) earns a modest confidence boost; completely ungrounded text on a borderline score earns a modest confidence reduction. If the LLM says 0.9 AI but stylometry says 0.2 AI, agreement collapses to about 0.3 and confidence is dragged down regardless of where the combined score or the grounding factor land. The system then reports "uncertain" rather than gambling on a contested call.
 
 ### What a 0.6 confidence means
 
@@ -290,6 +320,9 @@ Every decision and every appeal is captured as a structured record. The store is
 | `llm_available` | Whether the LLM signal ran (false in degraded mode). |
 | `p_ai_style` | Signal 2 raw probability. |
 | `style_features` | JSON of the computed stylometric features. |
+| `p_grounding_human` | Signal 3 grounding probability in [0, 1]. |
+| `grounding_features` | JSON of the grounding feature hit counts and subscores. |
+| `grounding_factor` | Signal 3 confidence modifier in [0.85, 1.15]. |
 | `combined_score` | Final combined probability. |
 | `confidence` | Final confidence value. |
 | `verdict` | `likely_ai` / `likely_human` / `uncertain`. |
@@ -313,7 +346,7 @@ The log is the single source of truth for the demo (at least three decision entr
 
 ## 12. Test Suite
 
-The `tests/` directory contains 72 tests across 10 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
+The `tests/` directory contains 108 tests across 12 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
 
 ### File-by-file breakdown
 
@@ -375,6 +408,13 @@ All implementation is done with Claude Code, with Claude (web) used for quick st
 - **Spec provided** — Section 7 (label variants), Section 8 (appeals), Section 10 (rate limiting), Section 11 (audit log schema), and the appeal diagram.
 - **What was built** — `labels.py`, which maps a verdict and confidence value to one of the three Section 7 variants and returns the exact, verbatim reader-facing text. The `TransparencyLabel` dataclass mirrors the `label` block of the `/submit` response contract. `app.py` was extended with the `POST /appeal` endpoint, which validates the payload, looks up the original decision, flips its status to `under_review`, attaches the appeal record to the audit log, and returns the Section 3 confirmation shape. `GET /content/<id>` was also added, returning the full decision record with all attached appeals for use by a human reviewer. Flask-Limiter was wired into `app.py` with the three tier limit table from Section 10: `POST /submit` at 10/hour and 30/day, `POST /appeal` at 5/hour, and a global 100/hour backstop. A `util/` package was introduced to hold the shared `clamp01` helper, which was being duplicated across signal and scoring modules. Test coverage was expanded to 72 tests across 10 files.
 - **Verification** — All three label variants are reached and match spec text verbatim. An appeal flips a decision to `under_review` and writes an appeal record recoverable via `/content/<id>` and `/log`. The audit log holds at least three decision entries. Rate limits return `429` when the quota is exceeded. All 72 tests pass.
+
+### Milestone 6 — Ensemble detection with grounding signal
+
+- **Spec provided** — Section 4 (Signal 3 design brief and independence argument), Section 5 (updated formula with grounding_factor modifier), Section 11 (audit log schema extension).
+- **What was built** — `signals/grounding_signal.py` implements Signal 3, the grounding heuristics. It computes four content-grounding features (temporal specificity, spatial specificity, sensory observations, first-hand epistemics) each using regex patterns that target meaning-bearing vocabulary rather than structure-bearing statistics. The four subscores are combined with equal weights (0.25 each) into a `p_grounding_human` probability, then mapped to a `grounding_factor` in [0.85, 1.15]. `scoring.py` was extended so `score()` accepts a `grounding_factor` parameter (default 1.0 for backward compatibility) and applies it as a post-multiplication on confidence after the two-signal formula. The `ScoreResult` dataclass and `to_dict()` were updated to expose `grounding_factor`. The audit log schema was extended with `p_grounding_human`, `grounding_features`, and `grounding_factor` columns. `app.py` now runs Signal 3 alongside the other two, passes `grounding_factor` to the scorer, and surfaces the grounding signal in both the `/submit` response (`signals.grounding`) and the audit log. `signals/__init__.py` was updated to document all three signals. Two new test files were added: `test_grounding_signal.py` (25 unit tests covering contract, directional separation, independence from stylometry, short-text behaviour, and per-feature subscore detection) and `test_scoring_with_grounding.py` (13 integration tests covering the modifier arithmetic, clamping, backward compatibility, and the asymmetric caution safety properties). Pre-existing test failures in `test_scoring.py` and `test_labels.py` (comments had wrong threshold values) were corrected to match the actual constants. Total test count is now 108 across 12 files.
+- **Independence argument** — Two texts were constructed with similar stylometric statistics (uniform short sentences, restricted vocabulary) but very different grounding scores: one with clock times, named locations, sensory details, and first-hand markers; the other with abstract process statements and no content anchors. Both pass the stylometric signal's structural patterns similarly, but their grounding scores differ by more than 0.1, confirming orthogonality.
+- **Weighting rationale** — Signal 3 is weighted at approximately 15% influence via the [0.85, 1.15] multiplier range. This reflects its lower genre-universal reliability. A full 33% weight would increase false positives on technical and abstract writing where absence of experiential content does not indicate AI generation.
 
 ---
 

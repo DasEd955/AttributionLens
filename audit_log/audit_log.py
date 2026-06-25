@@ -32,23 +32,28 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "audit_log.db")
 
 # Section 11 decisions table. Columns the later milestones fill (p_ai_style,
 # combined_score, confidence, verdict, label_variant) are nullable now so a
-# Milestone 3 row is valid without them.
+# Milestone 3 row is valid without them.  Signal 3 (grounding) columns
+# (p_grounding_human, grounding_features, grounding_factor) are also nullable
+# for backwards compatibility with rows written before Signal 3 was added.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions (
-    content_id    TEXT PRIMARY KEY,
-    content_hash  TEXT,
-    creator_id    TEXT,
-    p_ai_llm      REAL,
-    llm_rationale TEXT,
-    llm_available INTEGER,
-    p_ai_style    REAL,
-    style_features TEXT,
-    combined_score REAL,
-    confidence    REAL,
-    verdict       TEXT,
-    label_variant TEXT,
-    status        TEXT NOT NULL,
-    created_at    TEXT NOT NULL
+    content_id          TEXT PRIMARY KEY,
+    content_hash        TEXT,
+    creator_id          TEXT,
+    p_ai_llm            REAL,
+    llm_rationale       TEXT,
+    llm_available       INTEGER,
+    p_ai_style          REAL,
+    style_features      TEXT,
+    p_grounding_human   REAL,
+    grounding_features  TEXT,
+    grounding_factor    REAL,
+    combined_score      REAL,
+    confidence          REAL,
+    verdict             TEXT,
+    label_variant       TEXT,
+    status              TEXT NOT NULL,
+    created_at          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS appeals (
@@ -88,17 +93,29 @@ def _connect(path: Optional[str] = None) -> sqlite3.Connection:
 
 
 def init_db(path: Optional[str] = None) -> None:
-    """Create the decisions and appeals tables if they do not exist.
+    """Create the decisions and appeals tables if they do not exist, and migrate
+    any existing table to include columns added in later milestones.
 
     Idempotent: safe to call multiple times and safe to call after rows have
     already been written. Uses CREATE TABLE IF NOT EXISTS so existing data is
-    never dropped.
+    never dropped. ALTER TABLE ADD COLUMN is a no-op when the column already
+    exists (SQLite raises OperationalError which we swallow).
 
     Args:
         path (str, optional): Database file path. Defaults to _db_path().
     """
     with _connect(path) as conn:
         conn.executescript(_SCHEMA)
+        # Migrate existing databases that predate Milestone 6 grounding columns.
+        for col, typedef in (
+            ("p_grounding_human", "REAL"),
+            ("grounding_features", "TEXT"),
+            ("grounding_factor", "REAL"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
 
 def _utc_now_iso() -> str:
@@ -126,6 +143,9 @@ def record_decision(
     llm_available: Optional[bool] = None,
     p_ai_style: Optional[float] = None,
     style_features: Optional[dict] = None,
+    p_grounding_human: Optional[float] = None,
+    grounding_features: Optional[dict] = None,
+    grounding_factor: Optional[float] = None,
     combined_score: Optional[float] = None,
     confidence: Optional[float] = None,
     verdict: Optional[str] = None,
@@ -137,7 +157,8 @@ def record_decision(
     Only content_id and status are required in Milestone 3; all other fields
     are optional so the same function signature serves the richer rows produced
     by the Milestone 4/5 scorer and label generator without any breaking change.
-    style_features is serialized to a JSON string before storage.
+    style_features and grounding_features are serialized to JSON strings before
+    storage. Signal 3 (grounding) fields were added in Milestone 6.
 
     Args:
         content_id (str): UUID for this submission (primary key).
@@ -149,6 +170,9 @@ def record_decision(
         llm_available (bool, optional): Whether the LLM signal ran successfully.
         p_ai_style (float, optional): Stylometric signal probability (Milestone 4).
         style_features (dict, optional): Raw stylometric feature values (Milestone 4).
+        p_grounding_human (float, optional): Grounding signal probability in [0, 1] (Milestone 6).
+        grounding_features (dict, optional): Raw grounding feature counts and subscores (Milestone 6).
+        grounding_factor (float, optional): Grounding confidence modifier in [0.85, 1.15] (Milestone 6).
         combined_score (float, optional): Weighted combined probability (Milestone 4).
         confidence (float, optional): Confidence score in [0, 1] (Milestone 4).
         verdict (str, optional): Human-readable verdict string (Milestone 4).
@@ -160,14 +184,16 @@ def record_decision(
     """
     created_at = _utc_now_iso()
     features_json = json.dumps(style_features) if style_features is not None else None
+    grounding_features_json = json.dumps(grounding_features) if grounding_features is not None else None
     with _connect(path) as conn:
         conn.execute(
             """
             INSERT INTO decisions (
                 content_id, content_hash, creator_id, p_ai_llm, llm_rationale,
-                llm_available, p_ai_style, style_features, combined_score,
-                confidence, verdict, label_variant, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                llm_available, p_ai_style, style_features,
+                p_grounding_human, grounding_features, grounding_factor,
+                combined_score, confidence, verdict, label_variant, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 content_id,
@@ -178,6 +204,9 @@ def record_decision(
                 None if llm_available is None else int(llm_available),
                 p_ai_style,
                 features_json,
+                p_grounding_human,
+                grounding_features_json,
+                grounding_factor,
                 combined_score,
                 confidence,
                 verdict,
@@ -213,6 +242,9 @@ def get_decision(content_id: str, path: Optional[str] = None) -> Optional[dict[s
     if row is None:
         return None
     features = json.loads(row["style_features"]) if row["style_features"] is not None else None
+    grounding_features = (
+        json.loads(row["grounding_features"]) if row["grounding_features"] is not None else None
+    )
     return {
         "content_id": row["content_id"],
         "content_hash": row["content_hash"],
@@ -222,6 +254,9 @@ def get_decision(content_id: str, path: Optional[str] = None) -> Optional[dict[s
         "llm_available": None if row["llm_available"] is None else bool(row["llm_available"]),
         "p_ai_style": row["p_ai_style"],
         "style_features": features,
+        "p_grounding_human": row["p_grounding_human"],
+        "grounding_features": grounding_features,
+        "grounding_factor": row["grounding_factor"],
         "combined_score": row["combined_score"],
         "confidence": row["confidence"],
         "verdict": row["verdict"],
@@ -346,10 +381,12 @@ def _row_to_entry(row: sqlite3.Row, appeal_reasoning: Optional[str] = None) -> d
         # "attribution" is the verdict; null until the Milestone-4 scorer fills it.
         "attribution": row["verdict"],
         "confidence": row["confidence"],
-        # Both individual signal scores are surfaced so the demo /log row shows
-        # the LLM and stylometric inputs that produced the combined result.
+        # All three individual signal scores are surfaced so the demo /log row
+        # shows the LLM, stylometric, and grounding inputs that produced the result.
         "llm_score": row["p_ai_llm"],
         "style_score": row["p_ai_style"],
+        "grounding_score": row["p_grounding_human"],
+        "grounding_factor": row["grounding_factor"],
         "combined_score": row["combined_score"],
         "status": row["status"],
         # True once a POST /appeal has been filed against this decision (M5).
