@@ -51,7 +51,7 @@ Steps 4, 5, and 6 are deliberately independent. The LLM signal is semantic, the 
 
 ## 2. Architecture Diagrams
 
-### Repo Architecture
+### Repository Architecture
 
 ![Repo Architecture](util/Repo-Architecture.png)
 
