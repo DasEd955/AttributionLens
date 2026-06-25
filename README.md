@@ -28,6 +28,8 @@ The guiding principle of the entire design is asymmetric caution: on a writing p
 
 ## 1. Architecture Overview
 
+The repository is organized into a small set of focused modules, each owning a single responsibility. At the center is `app.py`, the Flask entry point that wires every module together and exposes the HTTP surface. Incoming requests pass through Flask-Limiter before reaching the core pipeline. The detection pipeline lives in the `signals/` directory: `llm_signal.py` calls Groq and returns a probability plus rationale, `stylometric_signal.py` runs pure Python structural heuristics, and `grounding_signal.py` measures experiential specificity. Outputs from those three modules flow into `scoring/scoring.py`, which combines them into a single `combined_p_ai` score and a `confidence` value, and then into `labels/labels.py`, which selects a reader-facing transparency label. Every decision and every appeal is persisted by `audit_log/audit_log.py` into a SQLite database (`attributionlens.db`). The `dashboard/` subdirectory holds a standalone React 18 and Vite frontend that talks to three dedicated Flask routes to render aggregate analytics. Supporting scripts in `util/` and `scripts/` handle tasks such as calibration checks and architecture diagram generation. Tests live in `tests/` and cover every module with unit and integration tests that run without any live credentials.
+
 A single piece of text travels through the system as follows:
 
 1. **Client submits** — A platform sends `POST /submit` with the raw text and an optional creator identifier.
@@ -48,6 +50,10 @@ Steps 4, 5, and 6 are deliberately independent. The LLM signal is semantic, the 
 ---
 
 ## 2. Architecture Diagrams
+
+### Repo Architecture
+
+![Repo Architecture](util/Repo-Architecture.png)
 
 ### Submission flow
 
