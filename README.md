@@ -55,7 +55,7 @@ Steps 4, 5, and 6 are deliberately independent. The LLM signal is semantic, the 
 
 ![Repo Architecture](util/Repo-Architecture.png)
 
-### Submission flow
+### Submission Flow
 
 ```mermaid
 flowchart TD
@@ -74,7 +74,7 @@ flowchart TD
     H -->|content_id| I[/200 JSON: verdict, confidence, label, content_id/]
 ```
 
-### Appeal flow
+### Appeal Flow
 
 ```mermaid
 flowchart TD
@@ -90,7 +90,7 @@ flowchart TD
     G --> H[/200 JSON: status under_review + confirmation/]
 ```
 
-### Dashboard data flow
+### Dashboard Data Flow
 
 ```mermaid
 flowchart TD
