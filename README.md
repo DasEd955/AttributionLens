@@ -61,6 +61,7 @@ flowchart TD
     C -->|raw text| G3[Signal 3: Grounding Heuristics]
     D -->|p_ai_llm in 0..1 + rationale| F[Confidence Scorer]
     E -->|p_ai_style in 0..1 + features| F
+    G3 -->|grounding_factor in 0.85..1.15| F
     F -->|combined_p_ai + confidence + verdict| G[Transparency Label Generator]
     G -->|label variant + reader text| H[(Audit Log)]
     H -->|content_id| I[/200 JSON: verdict, confidence, label, content_id/]
