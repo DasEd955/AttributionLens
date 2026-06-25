@@ -396,6 +396,236 @@ def _row_to_entry(row: sqlite3.Row, appeal_reasoning: Optional[str] = None) -> d
     }
 
 
+def get_dashboard_stats(path: Optional[str] = None) -> dict[str, Any]:
+    """Return aggregate metrics used by the analytics dashboard.
+
+    Computes four principal metrics from the full decisions and appeals tables:
+
+    1. Detection pattern counts (likely_ai, likely_human, uncertain) and totals.
+    2. Appeal rate: appeals filed as a fraction of total decisions.
+    3. Signal disagreement rate: mean and high-disagreement fraction.
+       ``signal_disagreement = abs(p_ai_llm - p_ai_style)`` (only rows where
+       both signals ran).
+    4. Grounding influence: mean absolute delta between final confidence and
+       base confidence (before the grounding modifier was applied).
+       ``base_confidence = decisiveness * agreement`` (clamped to [0,1]).
+       ``confidence_delta = final_confidence - base_confidence``
+       Only rows with a non-null grounding_factor are included.
+
+    Args:
+        path (str, optional): Database file path. Defaults to _db_path().
+
+    Returns:
+        dict[str, Any]: Aggregate stats with keys ``total``, ``verdict_counts``,
+            ``appeal_rate``, ``signal_disagreement``, ``grounding_influence``.
+    """
+    with _connect(path) as conn:
+        # --- Detection pattern counts ---
+        verdict_rows = conn.execute(
+            """
+            SELECT verdict, COUNT(*) AS cnt
+            FROM decisions
+            WHERE verdict IS NOT NULL
+            GROUP BY verdict
+            """
+        ).fetchall()
+        verdict_counts: dict[str, int] = {r["verdict"]: r["cnt"] for r in verdict_rows}
+
+        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM decisions").fetchone()
+        total: int = total_row["cnt"] if total_row else 0
+
+        # --- Appeal Rate ---
+        appeal_total_row = conn.execute("SELECT COUNT(*) AS cnt FROM appeals").fetchone()
+        appeal_total: int = appeal_total_row["cnt"] if appeal_total_row else 0
+
+        # "pending" = under_review in decisions table; "upheld" not tracked yet
+        # so we surface under_review count as proxy for pending.
+        pending_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM decisions WHERE status = 'under_review'"
+        ).fetchone()
+        pending: int = pending_row["cnt"] if pending_row else 0
+
+        appeal_rate: float = round(appeal_total / total, 4) if total > 0 else 0.0
+
+        # --- Signal Disagreement Rate ---
+        # Only rows where both LLM and stylometric signals ran.
+        disagree_rows = conn.execute(
+            """
+            SELECT ABS(p_ai_llm - p_ai_style) AS disagreement
+            FROM decisions
+            WHERE p_ai_llm IS NOT NULL AND p_ai_style IS NOT NULL
+            """
+        ).fetchall()
+        disagreements = [r["disagreement"] for r in disagree_rows]
+        n_disagree = len(disagreements)
+        avg_disagreement: float = round(sum(disagreements) / n_disagree, 4) if n_disagree > 0 else 0.0
+        high_disagreement_count: int = sum(1 for d in disagreements if d > 0.40)
+        pct_high_disagreement: float = (
+            round(high_disagreement_count / n_disagree, 4) if n_disagree > 0 else 0.0
+        )
+
+        # --- Grounding Influence ---
+        # Base confidence = decisiveness * agreement (before grounding factor).
+        # decisiveness = 2 * abs(combined_score - 0.5)
+        # agreement    = 1 - abs(p_ai_llm - p_ai_style)
+        # Rows with a null grounding_factor predate Signal 3 and are excluded.
+        grounding_rows = conn.execute(
+            """
+            SELECT
+                confidence,
+                grounding_factor,
+                combined_score,
+                p_ai_llm,
+                p_ai_style
+            FROM decisions
+            WHERE grounding_factor IS NOT NULL
+              AND combined_score IS NOT NULL
+              AND p_ai_llm IS NOT NULL
+              AND p_ai_style IS NOT NULL
+            """
+        ).fetchall()
+
+        deltas: list[float] = []
+        boosted = 0
+        reduced = 0
+        neutral = 0
+        for row in grounding_rows:
+            decisiveness = 2.0 * abs(row["combined_score"] - 0.5)
+            agreement = 1.0 - abs(row["p_ai_llm"] - row["p_ai_style"])
+            base_conf = min(1.0, max(0.0, decisiveness * agreement))
+            delta = round(row["confidence"] - base_conf, 4)
+            deltas.append(delta)
+            if delta > 0.001:
+                boosted += 1
+            elif delta < -0.001:
+                reduced += 1
+            else:
+                neutral += 1
+
+        n_grounding = len(deltas)
+        avg_influence: float = (
+            round(sum(abs(d) for d in deltas) / n_grounding, 4) if n_grounding > 0 else 0.0
+        )
+        avg_delta: float = round(sum(deltas) / n_grounding, 4) if n_grounding > 0 else 0.0
+        pct_boosted: float = round(boosted / n_grounding, 4) if n_grounding > 0 else 0.0
+        pct_reduced: float = round(reduced / n_grounding, 4) if n_grounding > 0 else 0.0
+        pct_neutral: float = round(neutral / n_grounding, 4) if n_grounding > 0 else 0.0
+
+    return {
+        "total": total,
+        "verdict_counts": {
+            "likely_ai": verdict_counts.get("likely_ai", 0),
+            "likely_human": verdict_counts.get("likely_human", 0),
+            "uncertain": verdict_counts.get("uncertain", 0),
+        },
+        "appeal_rate": appeal_rate,
+        "appeal_counts": {
+            "total": appeal_total,
+            "pending": pending,
+        },
+        "signal_disagreement": {
+            "n": n_disagree,
+            "avg_disagreement": avg_disagreement,
+            "pct_high_disagreement": pct_high_disagreement,
+            "high_disagreement_threshold": 0.40,
+        },
+        "grounding_influence": {
+            "n": n_grounding,
+            "avg_influence": avg_influence,
+            "avg_delta": avg_delta,
+            "pct_boosted": pct_boosted,
+            "pct_reduced": pct_reduced,
+            "pct_neutral": pct_neutral,
+        },
+    }
+
+
+def get_dashboard_timeseries(days: int = 30, path: Optional[str] = None) -> list[dict[str, Any]]:
+    """Return per-day verdict counts for the verdict distribution bar chart.
+
+    Groups the decisions table by calendar date (UTC) and verdict, returning
+    one row per (date, verdict) pair. The frontend aggregates these into the
+    stacked bar chart.
+
+    Args:
+        days (int, optional): How many calendar days back to include.
+            Defaults to 30. Clamped to [1, 365].
+        path (str, optional): Database file path. Defaults to _db_path().
+
+    Returns:
+        list[dict[str, Any]]: Rows with keys ``date`` (YYYY-MM-DD string),
+            ``likely_ai``, ``likely_human``, ``uncertain`` counts for that day.
+            Ordered oldest to newest.
+    """
+    days = max(1, min(days, 365))
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                substr(created_at, 1, 10) AS date,
+                verdict,
+                COUNT(*) AS cnt
+            FROM decisions
+            WHERE verdict IS NOT NULL
+              AND created_at >= datetime('now', ? || ' days')
+            GROUP BY date, verdict
+            ORDER BY date ASC
+            """,
+            (f"-{days}",),
+        ).fetchall()
+
+    # Pivot (date, verdict, cnt) into {date, likely_ai, likely_human, uncertain}
+    day_map: dict[str, dict[str, int]] = {}
+    for row in rows:
+        d = row["date"]
+        if d not in day_map:
+            day_map[d] = {"date": d, "likely_ai": 0, "likely_human": 0, "uncertain": 0}
+        v = row["verdict"]
+        if v in day_map[d]:
+            day_map[d][v] = row["cnt"]
+
+    return list(day_map.values())
+
+
+def get_scatter_points(limit: int = 500, path: Optional[str] = None) -> list[dict[str, Any]]:
+    """Return individual submission signal scores for the scatterplot.
+
+    Each point carries the LLM score, stylometric score, and verdict so the
+    frontend can plot p_ai_llm on the Y-axis, p_ai_style on the X-axis, and
+    color each dot by verdict. Only rows where both signals ran are included.
+
+    Args:
+        limit (int, optional): Maximum rows to return. Defaults to 500.
+            Clamped to [1, 2000] so the response stays renderable.
+        path (str, optional): Database file path. Defaults to _db_path().
+
+    Returns:
+        list[dict[str, Any]]: List of dicts with keys ``p_ai_llm``,
+            ``p_ai_style``, ``verdict``, and ``content_id``, newest first.
+    """
+    limit = max(1, min(limit, 2000))
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT content_id, p_ai_llm, p_ai_style, verdict
+            FROM decisions
+            WHERE p_ai_llm IS NOT NULL AND p_ai_style IS NOT NULL
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "content_id": row["content_id"],
+            "p_ai_llm": row["p_ai_llm"],
+            "p_ai_style": row["p_ai_style"],
+            "verdict": row["verdict"],
+        }
+        for row in rows
+    ]
+
+
 def get_log(limit: int = 50, path: Optional[str] = None) -> list[dict[str, Any]]:
     """Return the most recent decision entries ordered newest first.
 

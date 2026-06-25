@@ -40,12 +40,16 @@ import logging
 import uuid
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from audit_log import (
     get_appeals,
+    get_dashboard_stats,
+    get_dashboard_timeseries,
     get_decision,
     get_log,
+    get_scatter_points,
     init_db,
     record_appeal,
     record_decision,
@@ -103,6 +107,10 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
     """
     app = Flask(__name__)
 
+    # Allow the React dashboard dev server (localhost:5173) to call the API
+    # without browser CORS blocks. Restricted to the dashboard origin only.
+    CORS(app, origins=["http://localhost:5173"])
+
     # Ensure the audit log table exists before the first request (Section 11).
     init_db()
 
@@ -134,7 +142,12 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
         return jsonify({
             "service": "AttributionLens",
             "status": "ok",
-            "endpoints": ["/health", "/submit", "/appeal", "/log", "/content/<content_id>"],
+            "endpoints": [
+                "/health", "/submit", "/appeal", "/log",
+                "/content/<content_id>",
+                "/dashboard/stats", "/dashboard/timeseries",
+                "/dashboard/scatter",
+            ],
         }), 200
 
     @app.get("/health")
@@ -380,6 +393,59 @@ def create_app(*, enable_rate_limit: bool = True) -> Flask:
             return jsonify({"error": "Unknown content_id."}), 404
         decision["appeals"] = get_appeals(content_id)
         return jsonify(decision), 200
+
+    @app.get("/dashboard/stats")
+    def dashboard_stats():
+        """Return aggregate analytics metrics for the dashboard.
+
+        Computes four principal metrics from the full audit log: verdict
+        distribution counts, appeal rate, signal disagreement rate, and
+        grounding influence. All metrics are derived from the persisted
+        decisions and appeals tables. No signals are re-run.
+
+        Returns:
+            Response: JSON with keys ``total``, ``verdict_counts``,
+                      ``appeal_rate``, ``appeal_counts``,
+                      ``signal_disagreement``, and ``grounding_influence``,
+                      HTTP 200.
+        """
+        return jsonify(get_dashboard_stats()), 200
+
+    @app.get("/dashboard/timeseries")
+    def dashboard_timeseries():
+        """Return per-day verdict counts for the detection pattern bar chart.
+
+        Accepts an optional ``days`` query parameter (1-365, default 30) to
+        control the look-back window. Returns one entry per calendar day that
+        had at least one classified submission, with counts broken out by
+        verdict so the frontend can render a stacked bar chart.
+
+        Returns:
+            Response: JSON ``{"timeseries": [...]}`` with entries ordered
+                      oldest to newest, HTTP 200.
+        """
+        days = request.args.get("days", default=30, type=int)
+        return jsonify({"timeseries": get_dashboard_timeseries(days=days)}), 200
+
+    @app.get("/dashboard/scatter")
+    def dashboard_scatter():
+        """Return individual signal scores for the scatterplot visualization.
+
+        Returns one entry per submission (up to 500) where both the LLM and
+        stylometric signals ran. Each entry carries p_ai_llm, p_ai_style, and
+        verdict so the frontend can render a colored scatterplot with the LLM
+        score on one axis, stylometric score on the other, and verdict as the
+        point color. Agreement clusters and disagreement spread are immediately
+        visible, directly demonstrating the confidence collapse mechanism.
+
+        Accepts an optional ``limit`` query parameter (1-2000, default 500).
+
+        Returns:
+            Response: JSON ``{"points": [...]}`` with entries newest first,
+                      HTTP 200.
+        """
+        limit = request.args.get("limit", default=500, type=int)
+        return jsonify({"points": get_scatter_points(limit=limit)}), 200
 
     @app.errorhandler(429)
     def rate_limit_exceeded(error):
