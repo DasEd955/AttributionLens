@@ -64,6 +64,22 @@ flowchart TD
     G --> H[/200 JSON: status under_review + confirmation/]
 ```
 
+### Dashboard data flow
+
+```mermaid
+flowchart TD
+    DB[(SQLite Audit Log)] -->|get_dashboard_stats| S[GET /dashboard/stats]
+    DB -->|get_dashboard_timeseries| T[GET /dashboard/timeseries]
+    DB -->|get_scatter_points| SC[GET /dashboard/scatter]
+    S -->|metric cards JSON| FE[React Frontend - Vite port 5173]
+    T -->|daily verdict counts| FE
+    SC -->|p_ai_llm + p_ai_style + verdict| FE
+    FE --> MC[MetricCards]
+    FE --> VB[VerdictBarChart]
+    FE --> AP[AppealsChart]
+    FE --> SH[SignalHeatmap]
+```
+
 ---
 
 ## 3. API Surface
@@ -106,6 +122,14 @@ The contract below is what every other component implements against.
 ### `GET /health`
 
 - **Returns** — `{ "status": "ok", "groq_available": true|false }`. Used for monitoring and to confirm whether the system is running in degraded (stylometry only) mode.
+
+### Dashboard endpoints (Milestone 7)
+
+| Route | Query params | Returns |
+| --- | --- | --- |
+| `GET /dashboard/stats` | none | Four metric card values: total submissions, verdict breakdown, appeal rate, pct boosted by grounding |
+| `GET /dashboard/timeseries` | `days=N` (default 30) | Array of `{ date, likely_ai, likely_human, uncertain }` objects for the stacked bar chart |
+| `GET /dashboard/scatter` | `limit=N` (default 500) | Array of `{ p_ai_llm, p_ai_style, verdict }` objects for the signal scatterplot |
 
 ---
 
@@ -346,7 +370,7 @@ The log is the single source of truth for the demo (at least three decision entr
 
 ## 12. Test Suite
 
-The `tests/` directory contains 108 tests across 12 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
+The `tests/` directory contains 132 tests across 13 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
 
 ### File-by-file breakdown
 
@@ -371,6 +395,8 @@ The `tests/` directory contains 108 tests across 12 files. Every module with non
 **`test_appeal_route.py`** — Integration tests for `POST /appeal` and `GET /content/<id>`. Covers `400` on missing `content_id` or missing reasoning, `404` on an unknown `content_id`, the full `200` confirmation contract (content_id, status, message, appeal_id), that a filed appeal flips the decision to `under_review` and surfaces the creator's reasoning in `/log`, that the `creator_reasoning` field alias is accepted in place of `reasoning`, and that `GET /content/<id>` returns the decision with its attached appeals.
 
 **`test_rate_limit.py`** — Integration tests for rate limiting. Builds an app with Flask-Limiter enabled and confirms that `POST /submit` returns `429` once the per-endpoint quota is exceeded. No test uses a live Groq API key.
+
+**`test_dashboard.py`** — 24 tests covering the three dashboard routes in three categories: empty database (all routes return 200 with zero/empty values), correctness after known submissions (counts, rates, and limit parameters match expectations), and shape contracts (every response key the frontend depends on is asserted present).
 
 ---
 
@@ -415,6 +441,12 @@ All implementation is done with Claude Code, with Claude (web) used for quick st
 - **What was built** — `signals/grounding_signal.py` implements Signal 3, the grounding heuristics. It computes four content-grounding features (temporal specificity, spatial specificity, sensory observations, first-hand epistemics) each using regex patterns that target meaning-bearing vocabulary rather than structure-bearing statistics. The four subscores are combined with equal weights (0.25 each) into a `p_grounding_human` probability, then mapped to a `grounding_factor` in [0.85, 1.15]. `scoring.py` was extended so `score()` accepts a `grounding_factor` parameter (default 1.0 for backward compatibility) and applies it as a post-multiplication on confidence after the two-signal formula. The `ScoreResult` dataclass and `to_dict()` were updated to expose `grounding_factor`. The audit log schema was extended with `p_grounding_human`, `grounding_features`, and `grounding_factor` columns. `app.py` now runs Signal 3 alongside the other two, passes `grounding_factor` to the scorer, and surfaces the grounding signal in both the `/submit` response (`signals.grounding`) and the audit log. `signals/__init__.py` was updated to document all three signals. Two new test files were added: `test_grounding_signal.py` (25 unit tests covering contract, directional separation, independence from stylometry, short-text behaviour, and per-feature subscore detection) and `test_scoring_with_grounding.py` (13 integration tests covering the modifier arithmetic, clamping, backward compatibility, and the asymmetric caution safety properties). Pre-existing test failures in `test_scoring.py` and `test_labels.py` (comments had wrong threshold values) were corrected to match the actual constants. Total test count is now 108 across 12 files.
 - **Independence argument** — Two texts were constructed with similar stylometric statistics (uniform short sentences, restricted vocabulary) but very different grounding scores: one with clock times, named locations, sensory details, and first-hand markers; the other with abstract process statements and no content anchors. Both pass the stylometric signal's structural patterns similarly, but their grounding scores differ by more than 0.1, confirming orthogonality.
 - **Weighting rationale** — Signal 3 is weighted at approximately 15% influence via the [0.85, 1.15] multiplier range. This reflects its lower genre-universal reliability. A full 33% weight would increase false positives on technical and abstract writing where absence of experiential content does not indicate AI generation.
+
+### Milestone 7 — Analytics dashboard
+
+- **What was built** — Three new query functions in `audit_log/audit_log.py`: `get_dashboard_stats()` (four metric card values in a single DB pass), `get_dashboard_timeseries(days)` (daily verdict counts for the stacked bar chart), and `get_scatter_points(limit)` (one `(p_ai_llm, p_ai_style, verdict)` row per submission for the scatterplot). `audit_log/__init__.py` was updated to re-export all three. Three new routes were added to `app.py` (`GET /dashboard/stats`, `GET /dashboard/timeseries`, `GET /dashboard/scatter`) with `flask-cors` wired to allow requests from the Vite dev server at `http://localhost:5173`. A React 18 + Vite + Recharts frontend was built in `dashboard/` with four components: `MetricCards`, `VerdictBarChart`, `AppealsChart`, and `SignalHeatmap`. The Vite proxy rewrites `/api/*` to `http://localhost:5000/*` so the client never needs manual CORS handling. `SignalHeatmap` uses a custom `VerdictDot` shape renderer to color scatterplot dots by verdict because Recharts `Scatter` does not natively support per-point color from a data field. `App.jsx` fires all three fetches in parallel via `Promise.all` on mount and on each Refresh click, with independent per-chart loading and error state. 24 new tests were added in `tests/test_dashboard.py` covering empty DB graceful degradation, correctness after known submissions, and response shape contracts. Total test count is now 132 across 13 files.
+- **Grounding influence calculation** — `get_dashboard_stats` reconstructs `base_confidence = decisiveness * agreement` from the stored `combined_score`, `p_ai_llm`, and `p_ai_style` columns (reversing the confidence formula), then computes `confidence_delta = final_confidence - base_confidence` to measure Signal 3's contribution per decision. This avoids re-running the scorer against already-persisted data.
+- **Verification** — All 132 tests pass. The dashboard renders metric cards, a stacked bar chart, a grouped bar chart, and a scatterplot correctly against both an empty database and a database seeded by the demo script.
 
 ---
 

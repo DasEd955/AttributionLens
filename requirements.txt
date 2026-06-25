@@ -4,3 +4,13 @@ flask-cors>=4.0.0
 groq==0.15.0
 python-dotenv==1.0.1
 pytest>=8.0.0
+
+# Node.js 20+ and npm are required separately for the React dashboard.
+# Install from https://nodejs.org/ (LTS recommended).
+# Dashboard dependencies are managed via dashboard/package.json.
+# Key frontend packages (for reference only -- installed via npm install):
+#   react@^18.3.1
+#   react-dom@^18.3.1
+#   recharts@^2.12.7
+#   vite@^5.3.4
+#   @vitejs/plugin-react@^4.3.1

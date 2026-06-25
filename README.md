@@ -20,8 +20,9 @@ The guiding principle of the entire design is asymmetric caution: on a writing p
 10. [AI Usage](#10-ai-usage)
 11. [Appeals Workflow](#11-appeals-workflow)
 12. [Audit Log](#12-audit-log)
-13. [Test Suite](#13-test-suite)
-14. [Setup](#14-setup)
+13. [Analytics Dashboard](#13-analytics-dashboard)
+14. [Test Suite](#14-test-suite)
+15. [Setup and Launch](#15-setup-and-launch)
 
 ---
 
@@ -83,6 +84,22 @@ flowchart TD
     G --> H[/200 JSON: status under_review + confirmation/]
 ```
 
+### Dashboard data flow
+
+```mermaid
+flowchart TD
+    DB[(SQLite Audit Log)] -->|get_dashboard_stats| S[GET /dashboard/stats]
+    DB -->|get_dashboard_timeseries| T[GET /dashboard/timeseries]
+    DB -->|get_scatter_points| SC[GET /dashboard/scatter]
+    S -->|metric cards JSON| FE[React Frontend - Vite port 5173]
+    T -->|daily verdict counts| FE
+    SC -->|p_ai_llm + p_ai_style + verdict| FE
+    FE --> MC[MetricCards]
+    FE --> VB[VerdictBarChart]
+    FE --> AP[AppealsChart]
+    FE --> SH[SignalHeatmap]
+```
+
 ---
 
 ## 3. API Surface
@@ -126,6 +143,14 @@ The contract below is what every other component implements against.
 ### `GET /health`
 
 - **Returns** — `{ "status": "ok", "groq_available": true|false }`. Used for monitoring and to confirm whether the system is running in degraded (stylometry only) mode.
+
+### Dashboard endpoints (Milestone 7)
+
+| Route | Query params | Returns |
+| --- | --- | --- |
+| `GET /dashboard/stats` | none | Four metric card values: total submissions, verdict breakdown, appeal rate, pct boosted by grounding |
+| `GET /dashboard/timeseries` | `days=N` (default 30) | Array of `{ date, likely_ai, likely_human, uncertain }` objects for the stacked bar chart |
+| `GET /dashboard/scatter` | `limit=N` (default 500) | Array of `{ p_ai_llm, p_ai_style, verdict }` objects for the signal scatterplot |
 
 ---
 
@@ -382,9 +407,60 @@ The log is the single source of truth for the demo (at least three decision entr
 
 ---
 
-## 13. Test Suite
+## 13. Analytics Dashboard
 
-The `tests/` directory contains 108 tests across 12 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
+Milestone 7 added a read-only analytics dashboard that visualizes aggregate detection patterns across all stored decisions. It consists of three new Flask query functions, three new API routes, and a React 18 frontend served by Vite.
+
+### Backend additions
+
+**`audit_log/audit_log.py`** gained three query functions:
+
+| Function | Purpose |
+| --- | --- |
+| `get_dashboard_stats()` | Computes all four principal metrics in a single DB pass |
+| `get_dashboard_timeseries(days)` | Groups decisions by calendar date and verdict for the stacked bar chart |
+| `get_scatter_points(limit)` | Returns one `(p_ai_llm, p_ai_style, verdict)` row per submission for the scatterplot |
+
+The grounding influence calculation inside `get_dashboard_stats` reconstructs `base_confidence = decisiveness * agreement` from the stored `combined_score`, `p_ai_llm`, and `p_ai_style` columns, then computes `confidence_delta = final_confidence - base_confidence`. This is the correct way to reverse engineer Signal 3's contribution from already persisted data without re-running the scorer.
+
+`audit_log/__init__.py` re-exports the three new functions so `app.py`'s `from audit_log import ...` style works unchanged.
+
+**`app.py`** gained three new routes with CORS enabled via `flask-cors`:
+
+| Route | What it serves |
+| --- | --- |
+| `GET /dashboard/stats` | All four metric cards |
+| `GET /dashboard/timeseries?days=N` | Detection-pattern bar chart data |
+| `GET /dashboard/scatter?limit=N` | Signal agreement scatterplot data |
+
+### Frontend (dashboard/)
+
+Architecture: React 18 + Vite + Recharts. The Vite proxy in `vite.config.js` rewrites `/api/*` to `http://localhost:5000/*`, so all fetch calls in the app use relative `/api/...` URLs and work without any manual CORS handling on the client.
+
+| File | Chart type | Data source |
+| --- | --- | --- |
+| `MetricCards.jsx` | 4 summary cards | `/dashboard/stats` |
+| `VerdictBarChart.jsx` | Stacked bar (per day) | `/dashboard/timeseries` |
+| `AppealsChart.jsx` | Grouped bar | `/dashboard/stats` |
+| `SignalHeatmap.jsx` | Scatterplot | `/dashboard/scatter` |
+
+`App.jsx` fires all three fetches in parallel with `Promise.all` on mount and on each Refresh click. Each chart gets its own independent loading/error state, so a slow scatter query does not block the metric cards from rendering.
+
+`SignalHeatmap` uses a custom `VerdictDot` shape renderer because Recharts `Scatter` does not natively color individual dots by a data field. The renderer reads each point's `verdict` field and picks the right CSS variable color. The diagonal `ReferenceLine` (from (0,0) to (1,1)) marks perfect signal agreement; dots far from it are the high disagreement cases that collapse confidence and route to `uncertain`, making the architecture's safety mechanism visible at a glance.
+
+### Dashboard tests
+
+`tests/test_dashboard.py` adds 24 tests in three categories:
+
+- **Empty database** — all three routes return HTTP 200 with zero/empty values rather than errors. This validates graceful degradation for a fresh install.
+- **Correctness after known submissions** — total counts match the number of `_submit` calls, verdict counts sum to total, appeal rate equals `appeals_filed / total`, scatter `limit` parameter is respected.
+- **Shape contracts** — every response key the frontend depends on (`p_ai_llm`, `p_ai_style`, `verdict`, `date`, `pct_boosted`, etc.) is asserted present in each response.
+
+---
+
+## 14. Test Suite
+
+The `tests/` directory contains 132 tests across 13 files. Every module with nontrivial logic has a corresponding unit test file. Integration tests cover the full request path from HTTP request to audit row. Tests run with `pytest` from the project root; no environment variables or live Groq credentials are required because all LLM calls are replaced by in-process fakes.
 
 ```
 tests/
@@ -401,33 +477,136 @@ tests/
   test_labels.py                      # Label variant text and gating tests
   test_appeal_route.py                # POST /appeal and GET /content integration tests
   test_rate_limit.py                  # 429 behavior tests
+  test_dashboard.py                   # 24 dashboard route tests (empty DB, correctness, shape contracts)
 ```
 
 ---
 
-## 14. Setup
+## 15. Setup and Launch
 
-### Requirements
+### Prerequisites
 
-- Python 3.11+
-- A Groq API key set as `GROQ_API_KEY` in your environment. The service runs in degraded mode (stylometry only, confidence capped at 0.5) if the key is absent or Groq is unreachable.
+- **Python 3.11+**
+- **Node.js 20+ and npm** — required for the React dashboard. Download from [nodejs.org](https://nodejs.org/) (LTS recommended). After installing, open a new terminal and verify with `node --version` and `npm --version`.
+- **A Groq API key** — free tier available at [console.groq.com](https://console.groq.com/). The service runs in degraded mode (stylometry only, confidence capped at 0.5) if the key is absent or Groq is unreachable.
 
-### Install
+---
 
+### Step 1: Configure your Groq API key
+
+Create a `.env` file in the project root (next to `app.py`):
+
+**Windows (PowerShell)**
+```powershell
+New-Item .env -ItemType File
+Add-Content .env "GROQ_API_KEY=gsk_your_key_here"
+```
+
+**Mac / Linux**
 ```bash
+echo "GROQ_API_KEY=gsk_your_key_here" > .env
+```
+
+Replace `gsk_your_key_here` with your actual key. The `.env` file is already in `.gitignore` and will not be committed.
+
+---
+
+### Step 2: Install Python dependencies
+
+**Windows (PowerShell)**
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### Run
-
+**Mac / Linux**
 ```bash
-flask run
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Test
+---
+
+### Step 3: Start the Flask backend
+
+With the virtual environment active:
+
+```bash
+python app.py
+```
+
+Flask listens on `http://localhost:5000`. Leave this terminal running.
+
+---
+
+### Step 4: Generate sample data (optional but recommended)
+
+The dashboard is most interesting with real submissions. Open a second terminal and run one of the following.
+
+**Using the included demo script**
+
+```bash
+# Mac / Linux
+bash demo.sh
+
+# Windows (Git Bash or WSL)
+bash demo.sh
+```
+
+**Or submit a single entry manually**
+
+```bash
+curl -s -X POST http://localhost:5000/submit \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I remember the exact moment I realized something was wrong with the experiment. It was 7:14 AM on a Tuesday and the lab smelled faintly of burnt plastic."}'
+```
+
+Repeat with a few different texts to populate the charts.
+
+---
+
+### Step 5: Install Node dependencies and start the React frontend
+
+Open a third terminal (no virtual environment needed):
+
+**Windows (PowerShell)** — if `npm` is not recognized, add Node to your PATH first:
+```powershell
+$env:PATH += ";C:\Program Files\nodejs"
+cd dashboard
+npm install
+npm run dev
+```
+
+**Mac / Linux**
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Vite listens on `http://localhost:5173`. Open that URL in a browser to see the dashboard.
+
+---
+
+### Step 6: Run the tests
+
+With the virtual environment active and from the project root:
 
 ```bash
 pytest
 ```
 
-No live Groq credentials are required for tests. All LLM calls are replaced by deterministic fakes.
+No live Groq credentials are required. All LLM calls are replaced by deterministic fakes. All 132 tests should pass.
+
+---
+
+### Permanent PATH fix for Node on Windows
+
+If you want `npm` to work in every new terminal without the `$env:PATH` workaround:
+
+1. Search "Environment Variables" in the Start menu.
+2. Under System Variables, find `Path` and click Edit.
+3. Click New and add `C:\Program Files\nodejs`.
+4. Click OK and restart any open terminals.
