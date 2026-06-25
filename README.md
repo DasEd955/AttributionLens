@@ -131,7 +131,7 @@ The contract below is what every other component implements against.
 
 ## 4. Detection Signals
 
-The system uses three genuinely distinct signals. Each measures a different axis: semantic/stylistic coherence, structural statistical properties, and content-grounding specificity. They are informative in combination precisely because they fail in different ways and measure orthogonal properties.
+The system uses three genuinely distinct signals. Each measures a different axis: semantic/stylistic coherence, structural statistical properties, and content grounding specificity. They are informative in combination precisely because they fail in different ways and measure orthogonal properties.
 
 ### Signal 1 — LLM classification (Groq, `llama-3.3-70b-versatile`)
 
@@ -175,7 +175,7 @@ The system uses three genuinely distinct signals. Each measures a different axis
 - **Sensory observations** — smells, sounds, textures, colours used as direct observation (smelled like coffee, the seat was sticky).
 - **First-hand epistemics** — markers of how knowledge was acquired (I remember, when I was, my roommate, I had no idea).
 
-**Why this signal is orthogonal** — The independence test: two texts with similar stylometric statistics (uniform short sentences, restricted vocabulary) can produce very different grounding scores if one contains temporal anchors, named places, and sensory details while the other contains only abstract process statements. Stylometry sees both as structurally similar; grounding sees them as entirely different. The LLM signal also does not duplicate this: the LLM measures distributional similarity to AI-generated text in aggregate, while grounding measures whether specific content evidence of human provenance is present.
+**Why this signal is orthogonal** — The independence test: two texts with similar stylometric statistics (uniform short sentences, restricted vocabulary) can produce very different grounding scores if one contains temporal anchors, named places, and sensory details while the other contains only abstract process statements. Stylometry sees both as structurally similar; grounding sees them as entirely different. The LLM signal also does not duplicate this: the LLM measures distributional similarity to AI generated text in aggregate, while grounding measures whether specific content evidence of human provenance is present.
 
 **Output shape** — A `grounding_factor` in [0.85, 1.15] used as a confidence multiplier, a `p_grounding_human` probability in [0, 1] for audit log transparency, and a raw feature dict with per-dimension hit counts and subscores.
 
