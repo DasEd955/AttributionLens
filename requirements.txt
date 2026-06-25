@@ -1,4 +1,5 @@
 flask>=3.0.0
+Pillow>=10.0.0  # only required for scripts/gen_architecture_diagram.py (architecture diagram generation)
 flask-limiter>=3.5.0
 flask-cors>=4.0.0
 groq==0.15.0
