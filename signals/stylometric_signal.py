@@ -23,26 +23,9 @@ Per planning.md Section 4 (Signal 2) and Section 5 (scoring inputs):
 """
 
 from __future__ import annotations
-import re
 from dataclasses import dataclass, field
-from util import clamp01
+from util import clamp01, NEUTRAL_SCORE, MIN_RELIABLE_WORDS, WORD_RE, SENTENCE_SPLIT_RE, extract_words, split_sentences
 
-# Below this many words the structural features (variance, TTR) are too noisy to
-# trust (Section 4, "Short-text instability"). We still return a reading, but we
-# blend it toward the neutral fence so the signal does not overly assert on a
-# handful of words. This mirrors the LLM signal's refusal to fake certainty.
-MIN_RELIABLE_WORDS = 40
-
-# The neutral fence. A signal that has nothing to say returns 0.5 (max
-# ambiguity), matching llm_signal.NEUTRAL_SCORE so both signals speak the same
-# language to the confidence scorer.
-NEUTRAL_SCORE = 0.5
-
-# Sentence terminators used to split text into sentences.
-_SENTENCE_SPLIT_RE = re.compile(r"[.!?]+(?:\s+|$)")
-# A "word" is a run of letters/apostrophes; this avoids counting punctuation or
-# stray digits as vocabulary when computing the type-token ratio.
-_WORD_RE = re.compile(r"[A-Za-z']+")
 # Punctuation marks we track for the punctuation variety feature.
 _PUNCTUATION = set(".,;:!?-—()\"'")
 
@@ -71,40 +54,6 @@ class StylometricSignalResult:
             "p_ai": self.p_ai,
             "features": self.features,
         }
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split text into non-empty, stripped sentence strings.
-
-    Sentences are separated on runs of terminal punctuation (``.!?``). Text with
-    no terminal punctuation is treated as a single sentence so a one line input
-    still yields a measurable unit rather than an empty list.
-
-    Args:
-        text (str): The raw submitted text.
-
-    Returns:
-        list[str]: Non-empty sentence strings with surrounding whitespace removed.
-    """
-    parts = _SENTENCE_SPLIT_RE.split(text)
-    sentences = [p.strip() for p in parts if p.strip()]
-    return sentences or ([text.strip()] if text.strip() else [])
-
-
-def _words(text: str) -> list[str]:
-    """Extract lowercase word tokens from text for vocabulary measures.
-
-    Tokens are runs of letters and apostrophes; digits and punctuation are
-    excluded so the type-token ratio reflects genuine vocabulary rather than
-    formatting artifacts. Words are lowercased so case variants count as one type.
-
-    Args:
-        text (str): The raw submitted text.
-
-    Returns:
-        list[str]: Lowercased word tokens in order of appearance.
-    """
-    return [w.lower() for w in _WORD_RE.findall(text)]
 
 
 def _burstiness_subscore(sentence_word_counts: list[int]) -> float:
@@ -186,7 +135,7 @@ def _punctuation_subscore(text: str) -> float:
     # Up to ~6 distinct marks reads as varied human punctuation; 0-1 is flat.
     variety_ai = clamp01(1.0 - (distinct_marks / 6.0))
 
-    word_count = len(_WORD_RE.findall(text))
+    word_count = len(WORD_RE.findall(text))
     punct_count = sum(1 for ch in text if ch in _PUNCTUATION)
     if word_count == 0:
         density_ai = NEUTRAL_SCORE
@@ -250,9 +199,9 @@ def analyze_stylometry(text: str) -> StylometricSignalResult:
             function never raises on ordinary input; empty or whitespace text
             returns NEUTRAL_SCORE with the short-text flag set.
     """
-    sentences = _split_sentences(text)
-    words = _words(text)
-    sentence_word_counts = [len(_WORD_RE.findall(s)) for s in sentences]
+    sentences = split_sentences(text)
+    words = extract_words(text)
+    sentence_word_counts = [len(WORD_RE.findall(s)) for s in sentences]
 
     burstiness = _burstiness_subscore(sentence_word_counts)
     ttr = _ttr_subscore(words)

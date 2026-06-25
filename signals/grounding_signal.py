@@ -44,11 +44,7 @@ Per planning.md Section 4 (Signal 3) and Section 5 (scoring inputs):
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
-from util import clamp01
-
-# Below this many words the grounding features are too sparse to trust.
-# Mirrors MIN_RELIABLE_WORDS in stylometric_signal.py.
-MIN_RELIABLE_WORDS = 40
+from util import clamp01, MIN_RELIABLE_WORDS, WORD_RE
 
 # Neutral grounding factor: no modification to confidence.
 NEUTRAL_FACTOR = 1.0
@@ -176,8 +172,6 @@ _FIRSTHAND_PATTERNS = [
     ),
 ]
 
-# Word tokenizer reused from stylometric_signal (same definition, private copy).
-_WORD_RE = re.compile(r"[A-Za-z']+")
 
 
 @dataclass
@@ -371,7 +365,7 @@ def analyze_grounding(text: str) -> GroundingSignalResult:
             never raises on ordinary input; empty or whitespace-only text returns
             NEUTRAL_FACTOR with the short flag set.
     """
-    words = _WORD_RE.findall(text)
+    words = WORD_RE.findall(text)
     word_count = len(words)
     too_short = word_count < MIN_RELIABLE_WORDS
 

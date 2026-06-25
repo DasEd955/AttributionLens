@@ -20,16 +20,11 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
-from util import clamp01
+from util import clamp01, NEUTRAL_SCORE
 
 logger = logging.getLogger(__name__)
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-
-# A neutral score used whenever the LLM signal cannot run. 0.5 is the "fence"
-# (max ambiguity); paired with available=False the confidence scorer will treat
-# this as no information rather than as a real reading.
-NEUTRAL_SCORE = 0.5
 
 
 @dataclass
