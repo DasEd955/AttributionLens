@@ -396,120 +396,46 @@ def _row_to_entry(row: sqlite3.Row, appeal_reasoning: Optional[str] = None) -> d
     }
 
 
-def get_dashboard_stats(path: Optional[str] = None) -> dict[str, Any]:
-    """Return aggregate metrics used by the analytics dashboard.
+def _get_overview_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return verdict counts, total decisions, and appeal rate from the database.
 
-    Computes four principal metrics from the full decisions and appeals tables:
-
-    1. Detection pattern counts (likely_ai, likely_human, uncertain) and totals.
-    2. Appeal rate: appeals filed as a fraction of total decisions.
-    3. Signal disagreement rate: mean and high-disagreement fraction.
-       ``signal_disagreement = abs(p_ai_llm - p_ai_style)`` (only rows where
-       both signals ran).
-    4. Grounding influence: mean absolute delta between final confidence and
-       base confidence (before the grounding modifier was applied).
-       ``base_confidence = decisiveness * agreement`` (clamped to [0,1]).
-       ``confidence_delta = final_confidence - base_confidence``
-       Only rows with a non-null grounding_factor are included.
+    Queries the decisions table for per-verdict row counts and the total row
+    count, then queries the appeals table for the total appeal count and the
+    number of decisions currently under review. The appeal rate is the ratio of
+    total appeals to total decisions.
 
     Args:
-        path (str, optional): Database file path. Defaults to _db_path().
+        conn (sqlite3.Connection): An open database connection with row_factory
+            set to sqlite3.Row.
 
     Returns:
-        dict[str, Any]: Aggregate stats with keys ``total``, ``verdict_counts``,
-            ``appeal_rate``, ``signal_disagreement``, ``grounding_influence``.
+        dict[str, Any]: A dict with keys ``total`` (int), ``verdict_counts``
+            (dict with likely_ai, likely_human, uncertain), ``appeal_rate``
+            (float), and ``appeal_counts`` (dict with total and pending).
     """
-    with _connect(path) as conn:
-        # --- Detection pattern counts ---
-        verdict_rows = conn.execute(
-            """
-            SELECT verdict, COUNT(*) AS cnt
-            FROM decisions
-            WHERE verdict IS NOT NULL
-            GROUP BY verdict
-            """
-        ).fetchall()
-        verdict_counts: dict[str, int] = {r["verdict"]: r["cnt"] for r in verdict_rows}
+    verdict_rows = conn.execute(
+        """
+        SELECT verdict, COUNT(*) AS cnt
+        FROM decisions
+        WHERE verdict IS NOT NULL
+        GROUP BY verdict
+        """
+    ).fetchall()
+    verdict_counts: dict[str, int] = {r["verdict"]: r["cnt"] for r in verdict_rows}
 
-        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM decisions").fetchone()
-        total: int = total_row["cnt"] if total_row else 0
+    total_row = conn.execute("SELECT COUNT(*) AS cnt FROM decisions").fetchone()
+    total: int = total_row["cnt"] if total_row else 0
 
-        # --- Appeal Rate ---
-        appeal_total_row = conn.execute("SELECT COUNT(*) AS cnt FROM appeals").fetchone()
-        appeal_total: int = appeal_total_row["cnt"] if appeal_total_row else 0
+    appeal_total_row = conn.execute("SELECT COUNT(*) AS cnt FROM appeals").fetchone()
+    appeal_total: int = appeal_total_row["cnt"] if appeal_total_row else 0
 
-        # "pending" = under_review in decisions table; "upheld" not tracked yet
-        # so we surface under_review count as proxy for pending.
-        pending_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM decisions WHERE status = 'under_review'"
-        ).fetchone()
-        pending: int = pending_row["cnt"] if pending_row else 0
+    # "pending" proxied by under_review; upheld status is not tracked yet.
+    pending_row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM decisions WHERE status = 'under_review'"
+    ).fetchone()
+    pending: int = pending_row["cnt"] if pending_row else 0
 
-        appeal_rate: float = round(appeal_total / total, 4) if total > 0 else 0.0
-
-        # --- Signal Disagreement Rate ---
-        # Only rows where both LLM and stylometric signals ran.
-        disagree_rows = conn.execute(
-            """
-            SELECT ABS(p_ai_llm - p_ai_style) AS disagreement
-            FROM decisions
-            WHERE p_ai_llm IS NOT NULL AND p_ai_style IS NOT NULL
-            """
-        ).fetchall()
-        disagreements = [r["disagreement"] for r in disagree_rows]
-        n_disagree = len(disagreements)
-        avg_disagreement: float = round(sum(disagreements) / n_disagree, 4) if n_disagree > 0 else 0.0
-        high_disagreement_count: int = sum(1 for d in disagreements if d > 0.40)
-        pct_high_disagreement: float = (
-            round(high_disagreement_count / n_disagree, 4) if n_disagree > 0 else 0.0
-        )
-
-        # --- Grounding Influence ---
-        # Base confidence = decisiveness * agreement (before grounding factor).
-        # decisiveness = 2 * abs(combined_score - 0.5)
-        # agreement    = 1 - abs(p_ai_llm - p_ai_style)
-        # Rows with a null grounding_factor predate Signal 3 and are excluded.
-        grounding_rows = conn.execute(
-            """
-            SELECT
-                confidence,
-                grounding_factor,
-                combined_score,
-                p_ai_llm,
-                p_ai_style
-            FROM decisions
-            WHERE grounding_factor IS NOT NULL
-              AND combined_score IS NOT NULL
-              AND p_ai_llm IS NOT NULL
-              AND p_ai_style IS NOT NULL
-            """
-        ).fetchall()
-
-        deltas: list[float] = []
-        boosted = 0
-        reduced = 0
-        neutral = 0
-        for row in grounding_rows:
-            decisiveness = 2.0 * abs(row["combined_score"] - 0.5)
-            agreement = 1.0 - abs(row["p_ai_llm"] - row["p_ai_style"])
-            base_conf = min(1.0, max(0.0, decisiveness * agreement))
-            delta = round(row["confidence"] - base_conf, 4)
-            deltas.append(delta)
-            if delta > 0.001:
-                boosted += 1
-            elif delta < -0.001:
-                reduced += 1
-            else:
-                neutral += 1
-
-        n_grounding = len(deltas)
-        avg_influence: float = (
-            round(sum(abs(d) for d in deltas) / n_grounding, 4) if n_grounding > 0 else 0.0
-        )
-        avg_delta: float = round(sum(deltas) / n_grounding, 4) if n_grounding > 0 else 0.0
-        pct_boosted: float = round(boosted / n_grounding, 4) if n_grounding > 0 else 0.0
-        pct_reduced: float = round(reduced / n_grounding, 4) if n_grounding > 0 else 0.0
-        pct_neutral: float = round(neutral / n_grounding, 4) if n_grounding > 0 else 0.0
+    appeal_rate: float = round(appeal_total / total, 4) if total > 0 else 0.0
 
     return {
         "total": total,
@@ -523,20 +449,145 @@ def get_dashboard_stats(path: Optional[str] = None) -> dict[str, Any]:
             "total": appeal_total,
             "pending": pending,
         },
-        "signal_disagreement": {
-            "n": n_disagree,
-            "avg_disagreement": avg_disagreement,
-            "pct_high_disagreement": pct_high_disagreement,
-            "high_disagreement_threshold": 0.40,
-        },
-        "grounding_influence": {
-            "n": n_grounding,
-            "avg_influence": avg_influence,
-            "avg_delta": avg_delta,
-            "pct_boosted": pct_boosted,
-            "pct_reduced": pct_reduced,
-            "pct_neutral": pct_neutral,
-        },
+    }
+
+
+def _get_signal_disagreement_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return signal disagreement metrics for rows where both LLM and style signals ran.
+
+    Computes per-row disagreement as ``abs(p_ai_llm - p_ai_style)`` and
+    aggregates the mean disagreement and the fraction of rows that exceed the
+    high disagreement threshold of 0.40.
+
+    Args:
+        conn (sqlite3.Connection): An open database connection with row_factory
+            set to sqlite3.Row.
+
+    Returns:
+        dict[str, Any]: A dict with keys ``n`` (int, row count), ``avg_disagreement``
+            (float), ``pct_high_disagreement`` (float), and
+            ``high_disagreement_threshold`` (float, always 0.40).
+    """
+    rows = conn.execute(
+        """
+        SELECT ABS(p_ai_llm - p_ai_style) AS disagreement
+        FROM decisions
+        WHERE p_ai_llm IS NOT NULL AND p_ai_style IS NOT NULL
+        """
+    ).fetchall()
+    disagreements = [r["disagreement"] for r in rows]
+    n = len(disagreements)
+    avg_disagreement: float = round(sum(disagreements) / n, 4) if n > 0 else 0.0
+    high_count: int = sum(1 for d in disagreements if d > 0.40)
+    pct_high: float = round(high_count / n, 4) if n > 0 else 0.0
+
+    return {
+        "n": n,
+        "avg_disagreement": avg_disagreement,
+        "pct_high_disagreement": pct_high,
+        "high_disagreement_threshold": 0.40,
+    }
+
+
+def _get_grounding_influence_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return grounding influence metrics for rows where Signal 3 ran.
+
+    Computes the per-row confidence delta between the final confidence score
+    and the base confidence before the grounding modifier was applied.
+    Base confidence is derived as ``decisiveness * agreement`` clamped to
+    [0, 1], where ``decisiveness = 2 * abs(combined_score - 0.5)`` and
+    ``agreement = 1 - abs(p_ai_llm - p_ai_style)``. Rows with a null
+    grounding_factor predate Signal 3 and are excluded.
+
+    Args:
+        conn (sqlite3.Connection): An open database connection with row_factory
+            set to sqlite3.Row.
+
+    Returns:
+        dict[str, Any]: A dict with keys ``n`` (int), ``avg_influence`` (mean
+            absolute delta), ``avg_delta`` (signed mean delta), ``pct_boosted``,
+            ``pct_reduced``, and ``pct_neutral`` (all floats).
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            confidence,
+            grounding_factor,
+            combined_score,
+            p_ai_llm,
+            p_ai_style
+        FROM decisions
+        WHERE grounding_factor IS NOT NULL
+          AND combined_score IS NOT NULL
+          AND p_ai_llm IS NOT NULL
+          AND p_ai_style IS NOT NULL
+        """
+    ).fetchall()
+
+    deltas: list[float] = []
+    boosted = 0
+    reduced = 0
+    neutral = 0
+    for row in rows:
+        decisiveness = 2.0 * abs(row["combined_score"] - 0.5)
+        agreement = 1.0 - abs(row["p_ai_llm"] - row["p_ai_style"])
+        base_conf = min(1.0, max(0.0, decisiveness * agreement))
+        delta = round(row["confidence"] - base_conf, 4)
+        deltas.append(delta)
+        if delta > 0.001:
+            boosted += 1
+        elif delta < -0.001:
+            reduced += 1
+        else:
+            neutral += 1
+
+    n = len(deltas)
+    avg_influence: float = round(sum(abs(d) for d in deltas) / n, 4) if n > 0 else 0.0
+    avg_delta: float = round(sum(deltas) / n, 4) if n > 0 else 0.0
+    pct_boosted: float = round(boosted / n, 4) if n > 0 else 0.0
+    pct_reduced: float = round(reduced / n, 4) if n > 0 else 0.0
+    pct_neutral: float = round(neutral / n, 4) if n > 0 else 0.0
+
+    return {
+        "n": n,
+        "avg_influence": avg_influence,
+        "avg_delta": avg_delta,
+        "pct_boosted": pct_boosted,
+        "pct_reduced": pct_reduced,
+        "pct_neutral": pct_neutral,
+    }
+
+
+def get_dashboard_stats(path: Optional[str] = None) -> dict[str, Any]:
+    """Return aggregate metrics used by the analytics dashboard.
+
+    Delegates to three focused helpers, each responsible for one analytics
+    domain, then merges their results into the single response dict consumed
+    by the dashboard API. The four metrics covered are:
+
+    1. Detection pattern counts and appeal rate (via _get_overview_stats).
+    2. Signal disagreement rate (via _get_signal_disagreement_stats).
+    3. Grounding influence (via _get_grounding_influence_stats).
+
+    All helpers share one open connection so the snapshot is consistent.
+
+    Args:
+        path (str, optional): Database file path. Defaults to _db_path().
+
+    Returns:
+        dict[str, Any]: Aggregate stats with keys ``total``, ``verdict_counts``,
+            ``appeal_rate``, ``appeal_counts``, ``signal_disagreement``, and
+            ``grounding_influence``.
+    """
+    with _connect(path) as conn:
+        overview = _get_overview_stats(conn)
+        signal_disagreement = _get_signal_disagreement_stats(conn)
+        grounding_influence = _get_grounding_influence_stats(conn)
+
+    return {
+        **overview,
+        "signal_disagreement": signal_disagreement,
+        "grounding_influence": grounding_influence,
     }
 
 
