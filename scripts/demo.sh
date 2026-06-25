@@ -40,8 +40,17 @@ curl -s -X POST http://localhost:5000/submit \
   -d '{"text": "Remote work has fundamentally changed how many people approach their professional responsibilities. There are clear advantages to flexible scheduling and reduced commuting time. However, the lack of face-to-face interaction can create challenges in team communication and company culture. Organizations must carefully balance these competing interests.", "creator_id": "demo-ambiguous"}' | python -c "import sys, json; d = json.load(sys.stdin); print(f\"Score: {d['combined_score']:.2f}, Confidence: {d['confidence']:.2f}, Verdict: {d['verdict']}\")"
 echo ""
 
-# Moment 4: Appeal workflow
-echo "4. APPEAL WORKFLOW"
+# Moment 4: Seed dashboard data directly into SQLite (bypasses rate limiter)
+# Target: ~15% likely_ai, ~38% likely_human, ~47% uncertain across 99 rows.
+# Run with --clear to wipe previous seed rows before re-seeding.
+echo "4. SEEDING DASHBOARD DATA (99 rows: 16 AI + 40 human + 43 uncertain)"
+echo "======================================================================"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+python "$SCRIPT_DIR/seed_dashboard.py" --clear
+echo ""
+
+# Moment 5: Appeal workflow
+echo "5. APPEAL WORKFLOW"
 echo "=================="
 CONTENT_ID=$(curl -s -X POST http://localhost:5000/submit \
   -H "Content-Type: application/json" \
@@ -56,9 +65,9 @@ echo "Content record with appeal:"
 curl -s http://localhost:5000/content/$CONTENT_ID | python -m json.tool
 echo ""
 
-# Moment 5: Rate limiting
-echo "5. RATE LIMITING BEHAVIOR"
-echo "========================"
+# Moment 6: Rate limiting
+echo "6. RATE LIMITING BEHAVIOR"
+echo "========================="
 echo "Sending 12 requests (limit is 10/hour)..."
 for i in $(seq 1 12); do
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:5000/submit \
@@ -68,7 +77,7 @@ for i in $(seq 1 12); do
 done
 echo ""
 
-# Moment 6: Audit log
-echo "6. AUDIT LOG WITH 3+ ENTRIES"
+# Moment 7: Audit log
+echo "7. AUDIT LOG WITH 3+ ENTRIES"
 echo "============================"
 curl -s http://localhost:5000/log | python -m json.tool
