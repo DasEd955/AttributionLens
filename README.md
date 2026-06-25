@@ -236,6 +236,8 @@ A binary "AI / not AI" output would be dishonest, because perfect AI detection i
 
 ### Combining the signals
 
+![Confidence Scoring Formulas](attributionlens_formulas.png)
+
 ```
 combined_p_ai   = w_llm * p_ai_llm + w_style * p_ai_style      (w_llm = 0.6, w_style = 0.4)
 agreement       = 1 - abs(p_ai_llm - p_ai_style)               (in [0, 1])
