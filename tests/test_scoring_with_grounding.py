@@ -17,7 +17,7 @@ grounding architecture note, and Section 5 formulas):
 """
 
 import pytest
-from scoring import (
+from scoring.scoring import (
     AI_CONFIDENCE_THRESHOLD,
     AI_SCORE_THRESHOLD,
     DEGRADED_CONFIDENCE_CAP,

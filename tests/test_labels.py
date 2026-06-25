@@ -12,13 +12,13 @@ Coverage:
   No variant text contains a raw numeric probability.
 """
 
-from labels import (
+from scoring.labels import (
     VARIANT_AI,
     VARIANT_HUMAN,
     VARIANT_UNCERTAIN,
     generate_label,
 )
-from scoring import VERDICT_AI, VERDICT_HUMAN, VERDICT_UNCERTAIN
+from scoring.scoring import VERDICT_AI, VERDICT_HUMAN, VERDICT_UNCERTAIN
 
 # The exact Section 7 text, verbatim, used to confirm the generator does not
 # drift from the spec wording.

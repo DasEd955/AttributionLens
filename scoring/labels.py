@@ -20,7 +20,7 @@ label is a faithful surface for the verdict already recorded in the audit log
 
 from __future__ import annotations
 from dataclasses import dataclass
-from scoring import VERDICT_AI, VERDICT_HUMAN
+from scoring.scoring import VERDICT_AI, VERDICT_HUMAN
 
 # Label variant identifiers (also the audit-log ``label_variant`` values,
 # Section 11). These are the machine-readable names of the three Section 7 variants.

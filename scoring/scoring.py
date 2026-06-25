@@ -43,7 +43,7 @@ present as a high-confidence verdict.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from util import clamp01
+from util.util import clamp01
 
 # Signal weights (Section 5). The LLM is weighted higher because it captures
 # more of what distinguishes the classes, but stylometry keeps real weight so it

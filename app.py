@@ -55,8 +55,8 @@ from audit_log import (
     record_decision,
     set_status,
 )
-from labels import generate_label
-from scoring import score
+from scoring.labels import generate_label
+from scoring.scoring import score
 from signals.llm_signal import classify_with_llm
 from signals.stylometric_signal import analyze_stylometry
 from signals.grounding_signal import analyze_grounding

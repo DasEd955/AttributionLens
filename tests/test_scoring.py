@@ -12,7 +12,7 @@ Section 6 (the false-positive worked example), and Section 9 (degraded cap):
 
 import pytest
 
-from scoring import (
+from scoring.scoring import (
     AI_CONFIDENCE_THRESHOLD,
     AI_SCORE_THRESHOLD,
     DEGRADED_CONFIDENCE_CAP,

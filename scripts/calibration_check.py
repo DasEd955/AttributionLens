@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scoring import score
+from scoring.scoring import score
 from signals.stylometric_signal import analyze_stylometry
 
 # The four calibration fixtures from the Milestone 4 brief, paired with a fixed,
