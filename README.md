@@ -58,6 +58,7 @@ flowchart TD
     C -->|invalid / too long| ERR[/400 Bad Request/]
     C -->|raw text| D[Signal 1: LLM Classifier - Groq]
     C -->|raw text| E[Signal 2: Stylometric Heuristics]
+    C -->|raw text| G3[Signal 3: Grounding Heuristics]
     D -->|p_ai_llm in 0..1 + rationale| F[Confidence Scorer]
     E -->|p_ai_style in 0..1 + features| F
     F -->|combined_p_ai + confidence + verdict| G[Transparency Label Generator]
